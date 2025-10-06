@@ -17,25 +17,18 @@ const gravity = { x: 0.0, y: -5.0, z: 0.0 };
 
 // --- Collision Groups ---
 const GROUP_ARROW = 1 << 0;
-const GROUP_BOW = 1 << 1;
-const GROUP_TARGET = 1 << 2;
-const GROUP_FLOOR = 1 << 3;
+const GROUP_TARGET = 1 << 1;
+const GROUP_FLOOR = 1 << 2;
 
-// Arrow collides with Target and Floor
 const ARROW_GROUP_FILTER = (GROUP_ARROW << 16) | (GROUP_TARGET | GROUP_FLOOR);
-// Bow collides with nothing (it's kinematic and visual only)
-const BOW_GROUP_FILTER = (GROUP_BOW << 16) | 0;
-// Target collides with Arrow
 const TARGET_GROUP_FILTER = (GROUP_TARGET << 16) | GROUP_ARROW;
-// Floor collides with Arrow
 const FLOOR_GROUP_FILTER = (GROUP_FLOOR << 16) | GROUP_ARROW;
-
 
 // --- Game Objects ---
 let bow, target, bowstring;
-let arrowTemplate; // To clone new arrows from
-let arrowObject = null; // The currently active/nocked arrow { mesh, body }
-let firedArrows = []; // Store arrows that have been shot
+let arrowTemplate;
+let arrowObject = null;
+let firedArrows = [];
 
 // --- Controller and State ---
 let bowController = null;
@@ -43,7 +36,6 @@ let arrowController = null;
 let sceneSetupInitiated = false;
 
 async function init() {
-    // Basic Three.js setup
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
@@ -61,26 +53,18 @@ async function init() {
 
     loader = new GLTFLoader();
 
-    // Physics World
     await RAPIER.init();
     world = new RAPIER.World(gravity);
 
-    // AR Setup
-    const arButton = ARButton.createButton(renderer, {
-        requiredFeatures: ['local-floor', 'plane-detection']
-    });
+    const arButton = ARButton.createButton(renderer, { requiredFeatures: ['local-floor', 'plane-detection'] });
     document.body.appendChild(arButton);
     planes = new XRPlanes(renderer);
     scene.add(planes);
 
-    // Controller Setup
     setupControllers();
 
-    // Event Listeners
     renderer.xr.addEventListener('sessionend', cleanupScene);
     window.addEventListener('resize', onWindowResize);
-
-    // Start render loop
     renderer.setAnimationLoop(animate);
 }
 
@@ -92,7 +76,6 @@ function onWindowResize() {
 
 function setupControllers() {
     const controllerModelFactory = new XRControllerModelFactory();
-
     for (let i = 0; i < 2; i++) {
         const controller = renderer.xr.getController(i);
         controller.userData.id = i;
@@ -102,8 +85,8 @@ function setupControllers() {
         grip.add(controllerModelFactory.createControllerModel(grip));
         scene.add(grip);
 
-        controller.addEventListener('connected', function(event) {
-            this.gamepad = event.data.gamepad;
+        controller.addEventListener('connected', (event) => {
+            controller.gamepad = event.data.gamepad;
         });
 
         controller.addEventListener('selectstart', onSelectStart);
@@ -113,10 +96,7 @@ function setupControllers() {
 
 function onSelectStart(event) {
     const controller = event.target;
-
-    // A non-bow controller can nock an arrow
     if (bowController && controller !== bowController) {
-        // If there's no arrow ready, create one.
         if (!arrowObject) {
             if (!arrowTemplate) return;
 
@@ -124,9 +104,7 @@ function onSelectStart(event) {
             newArrowMesh.visible = true;
             scene.add(newArrowMesh);
 
-            const bowPosition = bow.position;
-            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
-                .setTranslation(bowPosition.x, bowPosition.y, bowPosition.z);
+            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
             const body = world.createRigidBody(arrowBodyDesc);
             const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, 0.4)
                 .setMass(0.1)
@@ -135,35 +113,29 @@ function onSelectStart(event) {
 
             arrowObject = { mesh: newArrowMesh, body: body };
         }
-
         arrowController = controller;
     }
 }
 
 function onSelectEnd(event) {
-    const controller = event.target;
-    if (arrowController === controller) {
+    if (arrowController === event.target) {
         shootArrow();
-        arrowController = null;
     }
 }
 
 async function placeScene(floorY) {
     const gltf = await loader.loadAsync('3d/archery.glb');
 
-    // --- Invisible Floor ---
     if (floorBody) world.removeRigidBody(floorBody);
     const floorBodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(0, floorY, 0);
     floorBody = world.createRigidBody(floorBodyDesc);
     const floorColliderDesc = RAPIER.ColliderDesc.cuboid(100, 0.1, 100).setCollisionGroups(FLOOR_GROUP_FILTER);
     world.createCollider(floorColliderDesc, floorBody);
 
-    // --- Target Setup ---
     target = new THREE.Group();
     gltf.scene.traverse(child => {
         if (child.isMesh && !isNaN(parseInt(child.name))) {
-            const ring = child.clone();
-            target.add(ring);
+            target.add(child.clone());
         }
     });
     target.position.set(0, floorY + 1.2, -10);
@@ -182,13 +154,9 @@ async function placeScene(floorY) {
         world.createCollider(colliderDesc, ringBody);
     });
 
-    // --- Bow and Arrow Template Setup ---
     bow = gltf.scene.getObjectByName('bow');
-    const arrowMesh = gltf.scene.getObjectByName('arrow');
     if (bow) {
         scene.add(bow);
-
-        // --- Bowstring Setup ---
         bow.geometry.computeBoundingBox();
         const bowBox = bow.geometry.boundingBox;
         const bowCenterX = bowBox.getCenter(new THREE.Vector3()).x;
@@ -200,10 +168,11 @@ async function placeScene(floorY) {
         const points = new Float32Array(3 * 3);
         const stringGeometry = new THREE.BufferGeometry();
         stringGeometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
-
         bowstring = new THREE.Line(stringGeometry, stringMaterial);
         scene.add(bowstring);
     }
+
+    const arrowMesh = gltf.scene.getObjectByName('arrow');
     if (arrowMesh) {
         arrowTemplate = arrowMesh;
         arrowTemplate.geometry.computeBoundingBox();
@@ -218,10 +187,11 @@ function shootArrow() {
 
     arrowObject.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
 
+    // The shooting direction is determined by the bow's orientation
+    const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(bow.quaternion);
+
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
-    const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
-
     const { length: arrowLength } = arrowTemplate.userData;
     const drawDistance = Math.min(bowHand.position.distanceTo(arrowHand.position), arrowLength);
     const drawRatio = drawDistance / arrowLength;
@@ -232,32 +202,27 @@ function shootArrow() {
 
     firedArrows.push(arrowObject);
     arrowObject = null;
+    arrowController = null;
 }
 
 function cleanupScene() {
     if (target) scene.remove(target);
     if (bow) scene.remove(bow);
     if (bowstring) scene.remove(bowstring);
-    if (arrowObject && arrowObject.mesh) scene.remove(arrowObject.mesh);
-    if (arrowObject && arrowObject.body) world.removeRigidBody(arrowObject.body);
+
+    if (arrowObject) {
+        if (arrowObject.mesh) scene.remove(arrowObject.mesh);
+        if (arrowObject.body) world.removeRigidBody(arrowObject.body);
+    }
     firedArrows.forEach(obj => {
         if (obj.mesh) scene.remove(obj.mesh);
         if (obj.body) world.removeRigidBody(obj.body);
     });
 
-    if (floorBody) {
-        world.removeRigidBody(floorBody);
-        floorBody = null;
-    }
+    if (floorBody) world.removeRigidBody(floorBody);
 
-    target = null;
-    bow = null;
-    bowstring = null;
-    arrowTemplate = null;
-    arrowObject = null;
+    target = bow = bowstring = arrowTemplate = arrowObject = bowController = arrowController = floorBody = null;
     firedArrows = [];
-    bowController = null;
-    arrowController = null;
     sceneSetupInitiated = false;
 }
 
@@ -265,9 +230,7 @@ function animate(timestamp, frame) {
     if (renderer.xr.isPresenting && !sceneSetupInitiated && frame) {
         if (planes.children.length > 0) {
             let floorY = 0;
-            planes.children.forEach(plane => {
-                floorY = Math.min(floorY, plane.position.y);
-            });
+            planes.children.forEach(plane => { floorY = Math.min(floorY, plane.position.y); });
             placeScene(floorY);
             sceneSetupInitiated = true;
             planes.visible = false;
@@ -293,34 +256,26 @@ function animate(timestamp, frame) {
         const controller = renderer.xr.getController(bowController.userData.id);
         const offsetRotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
         const finalRotation = controller.quaternion.clone().multiply(offsetRotation);
-
         bow.position.copy(controller.position);
         bow.quaternion.copy(finalRotation);
     }
 
     if (arrowController && arrowObject && arrowObject.body && bowController) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
-        const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
         const mesh = arrowObject.mesh;
-        const arrowLength = arrowTemplate.userData.length;
 
-        // 1. Aim the arrow from the drawing hand towards the bow hand
+        // The arrow's rotation should match the bow's rotation exactly.
+        mesh.quaternion.copy(bow.quaternion);
+
+        // The arrow's position should be at the drawing hand.
         mesh.position.copy(arrowHand.position);
-        mesh.lookAt(bowHand.position);
 
-        // 2. Correct the orientation since the model's "front" is its tail
-        mesh.rotateY(Math.PI);
-
-        // 3. Offset the arrow's position so its nock is at the hand
-        const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
-        const offset = direction.clone().multiplyScalar(arrowLength / 2);
-        mesh.position.add(offset);
-
-        // 4. Update the physics body
+        // Update the physics body to match.
         arrowBody.setNextKinematicTranslation(mesh.position);
         arrowBody.setNextKinematicRotation(mesh.quaternion);
     }
+
 
     firedArrows.forEach(obj => {
         if (obj.body) {
@@ -331,10 +286,8 @@ function animate(timestamp, frame) {
 
     if (bow && bowstring) {
         const positions = bowstring.geometry.attributes.position.array;
-
         const topPointLocal = bow.userData.top;
         const bottomPointLocal = bow.userData.bottom;
-
         const topPointWorld = topPointLocal.clone().applyMatrix4(bow.matrixWorld);
         const bottomPointWorld = bottomPointLocal.clone().applyMatrix4(bow.matrixWorld);
 
@@ -348,7 +301,6 @@ function animate(timestamp, frame) {
             positions[3] = bottomPointWorld.x; positions[4] = bottomPointWorld.y; positions[5] = bottomPointWorld.z;
             positions[6] = bottomPointWorld.x; positions[7] = bottomPointWorld.y; positions[8] = bottomPointWorld.z;
         }
-
         bowstring.geometry.attributes.position.needsUpdate = true;
         bowstring.geometry.computeBoundingSphere();
     }
