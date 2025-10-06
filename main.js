@@ -84,6 +84,10 @@ function setupControllers() {
         grip.add(controllerModelFactory.createControllerModel(grip));
         scene.add(grip);
 
+        controller.addEventListener('connected', function(event) {
+            this.gamepad = event.data.gamepad;
+        });
+
         controller.addEventListener('selectstart', onSelectStart);
         controller.addEventListener('selectend', onSelectEnd);
     }
