@@ -185,17 +185,17 @@ async function placeScene(floorY) {
         if (bowSize.x > bowSize.y && bowSize.x > bowSize.z) heightAxis = 'x';
         else if (bowSize.z > bowSize.y) heightAxis = 'z';
 
-        // Assume the front of the bow is along the positive Z axis in local space
-        const frontZ = bowBox.max.z;
+        // Assume the back of the bow is along the minimum Z axis in local space
+        const backZ = bowBox.min.z;
 
         switch (heightAxis) {
             case 'x':
-                bow.userData.top = new THREE.Vector3(bowBox.max.x, bowCenter.y, frontZ);
-                bow.userData.bottom = new THREE.Vector3(bowBox.min.x, bowCenter.y, frontZ);
+                bow.userData.top = new THREE.Vector3(bowBox.max.x, bowCenter.y, backZ);
+                bow.userData.bottom = new THREE.Vector3(bowBox.min.x, bowCenter.y, backZ);
                 break;
             case 'y':
-                bow.userData.top = new THREE.Vector3(bowCenter.x, bowBox.max.y, frontZ);
-                bow.userData.bottom = new THREE.Vector3(bowCenter.x, bowBox.min.y, frontZ);
+                bow.userData.top = new THREE.Vector3(bowCenter.x, bowBox.max.y, backZ);
+                bow.userData.bottom = new THREE.Vector3(bowCenter.x, bowBox.min.y, backZ);
                 break;
             case 'z': // This case is unlikely but handled. Assumes X is depth.
                 bow.userData.top = new THREE.Vector3(bowBox.max.x, bowCenter.y, bowBox.max.z);
@@ -357,6 +357,10 @@ function animate(timestamp, frame) {
 
         // 2. Create rotation quaternion
         const rotationQuaternion = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
+
+        // Apply a 180-degree spin to correct the model's orientation
+        const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+        rotationQuaternion.multiply(spin);
 
         // 3. Calculate the rotated nock offset
         const rotatedNockOffset = localNock.clone().applyQuaternion(rotationQuaternion);
