@@ -185,8 +185,8 @@ async function placeScene(floorY) {
         if (bowSize.x > bowSize.y && bowSize.x > bowSize.z) heightAxis = 'x';
         else if (bowSize.z > bowSize.y) heightAxis = 'z';
 
-        // Assume the back of the bow is along the minimum Z axis in local space
-        const backZ = bowBox.min.z;
+        // Assume the back of the bow is along the maximum Z axis in local space
+        const backZ = bowBox.max.z;
 
         switch (heightAxis) {
             case 'x':
@@ -264,9 +264,12 @@ function shootArrow() {
     const bowHand = renderer.xr.getController(bowController.userData.id);
     const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
 
-    // 3. Calculate power based on draw distance
-    const drawDistance = bowHand.position.distanceTo(arrowHand.position);
-    const power = Math.min(drawDistance, 1.0) * 60; // Capped power
+    // 3. Calculate power based on a ratio of the draw distance to the arrow's length
+    const { length: arrowLength } = arrowTemplate.userData;
+    const drawDistance = Math.min(bowHand.position.distanceTo(arrowHand.position), arrowLength);
+    const drawRatio = drawDistance / arrowLength;
+    const maxPower = 80; // An arbitrary maximum power value
+    const power = drawRatio * maxPower;
 
     // 4. Apply impulse
     arrowObject.body.applyImpulse(direction.multiplyScalar(power), true);
@@ -350,25 +353,30 @@ function animate(timestamp, frame) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
-        const { forward: localForward, nock: localNock } = arrowTemplate.userData;
+        const { forward: localForward, nock: localNock, length: arrowLength } = arrowTemplate.userData;
 
-        // 1. Get world-space direction from arrow hand to bow hand
-        const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
+        // 1. Get world-space direction and distance from arrow hand to bow hand
+        const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position);
+        const drawDistance = worldDirection.length();
+        worldDirection.normalize();
 
-        // 2. Create rotation quaternion
-        const rotationQuaternion = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
+        // 2. Determine the nock's position (clamp it if drawn too far)
+        let nockPosition = arrowHand.position.clone();
+        if (drawDistance > arrowLength) {
+            nockPosition = bowHand.position.clone().sub(worldDirection.clone().multiplyScalar(arrowLength));
+        }
 
-        // Apply a 180-degree spin to correct the model's orientation
-        const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-        rotationQuaternion.multiply(spin);
+        // 3. Create rotation quaternion. We align the *negated* local forward vector
+        //    with the world direction to ensure the arrow points away from the player.
+        const rotationQuaternion = new THREE.Quaternion().setFromUnitVectors(localForward.clone().negate(), worldDirection);
 
-        // 3. Calculate the rotated nock offset
+        // 4. Calculate the rotated nock offset
         const rotatedNockOffset = localNock.clone().applyQuaternion(rotationQuaternion);
 
-        // 4. Calculate the final position for the arrow's center
-        const newArrowPosition = new THREE.Vector3().subVectors(arrowHand.position, rotatedNockOffset);
+        // 5. Calculate the final position for the arrow's center using the (potentially clamped) nockPosition
+        const newArrowPosition = new THREE.Vector3().subVectors(nockPosition, rotatedNockOffset);
 
-        // 5. Update the kinematic body
+        // 6. Update the kinematic body
         arrowBody.setNextKinematicTranslation(newArrowPosition);
         arrowBody.setNextKinematicRotation(rotationQuaternion);
     }
