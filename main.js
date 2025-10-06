@@ -16,7 +16,7 @@ let world;
 const gravity = { x: 0.0, y: -5.0, z: 0.0 }; // Reduced gravity for a more floaty arrow
 
 // Game Objects
-let bow, target;
+let bow, target, bowstring;
 let arrowTemplate; // To clone new arrows from
 let arrowObject = null; // The currently active/nocked arrow { mesh, body }
 let firedArrows = []; // Store arrows that have been shot
@@ -169,7 +169,18 @@ async function placeScene(floorY) {
     // --- Bow and Arrow Template Setup ---
     bow = gltf.scene.getObjectByName('bow');
     const arrowMesh = gltf.scene.getObjectByName('arrow');
-    if (bow) scene.add(bow);
+    if (bow) {
+        scene.add(bow);
+
+        // --- Bowstring Setup ---
+        const stringMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
+        const points = new Float32Array(3 * 3); // 3 vertices, 3 coordinates each
+        const stringGeometry = new THREE.BufferGeometry();
+        stringGeometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
+
+        bowstring = new THREE.Line(stringGeometry, stringMaterial);
+        scene.add(bowstring);
+    }
     if (arrowMesh) {
         arrowTemplate = arrowMesh;
         arrowTemplate.visible = false; // The template is never visible
@@ -204,6 +215,7 @@ function shootArrow() {
 function cleanupScene() {
     if (target) scene.remove(target);
     if (bow) scene.remove(bow);
+    if (bowstring) scene.remove(bowstring);
     if (arrowObject && arrowObject.mesh) scene.remove(arrowObject.mesh);
     if (arrowObject && arrowObject.body) world.removeRigidBody(arrowObject.body);
     firedArrows.forEach(obj => {
@@ -218,6 +230,7 @@ function cleanupScene() {
 
     target = null;
     bow = null;
+    bowstring = null;
     arrowTemplate = null;
     arrowObject = null;
     firedArrows = [];
@@ -262,7 +275,11 @@ function animate(timestamp, frame) {
     if (bowController && bow) {
         const controller = renderer.xr.getController(bowController.userData.id);
         bow.position.copy(controller.position);
-        bow.quaternion.copy(controller.quaternion);
+
+        // Apply a 180-degree rotation to correct the bow's orientation
+        const offsetRotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+        const finalRotation = controller.quaternion.clone().multiply(offsetRotation);
+        bow.quaternion.copy(finalRotation);
     }
 
     if (arrowController && arrowObject && arrowObject.body) {
@@ -290,6 +307,55 @@ function animate(timestamp, frame) {
             obj.mesh.quaternion.copy(obj.body.rotation());
         }
     });
+
+    // --- Update Bowstring ---
+    if (bow && bowstring) {
+        const positions = bowstring.geometry.attributes.position.array;
+
+        // Define bowstring attachment points in the bow's local space
+        const topPointLocal = new THREE.Vector3(0, 0.6, 0);
+        const bottomPointLocal = new THREE.Vector3(0, -0.6, 0);
+
+        // Transform these points to world space
+        const topPointWorld = topPointLocal.clone().applyMatrix4(bow.matrixWorld);
+        const bottomPointWorld = bottomPointLocal.clone().applyMatrix4(bow.matrixWorld);
+
+        if (arrowController) {
+            // Drawn state: top -> controller -> bottom
+            const controllerPosition = renderer.xr.getController(arrowController.userData.id).position;
+
+            positions[0] = topPointWorld.x;
+            positions[1] = topPointWorld.y;
+            positions[2] = topPointWorld.z;
+
+            positions[3] = controllerPosition.x;
+            positions[4] = controllerPosition.y;
+            positions[5] = controllerPosition.z;
+
+            positions[6] = bottomPointWorld.x;
+            positions[7] = bottomPointWorld.y;
+            positions[8] = bottomPointWorld.z;
+
+        } else {
+            // Idle state: top -> bottom
+            positions[0] = topPointWorld.x;
+            positions[1] = topPointWorld.y;
+            positions[2] = topPointWorld.z;
+
+            positions[3] = bottomPointWorld.x;
+            positions[4] = bottomPointWorld.y;
+            positions[5] = bottomPointWorld.z;
+
+            // Hide the second segment by making it zero-length
+            positions[6] = bottomPointWorld.x;
+            positions[7] = bottomPointWorld.y;
+            positions[8] = bottomPointWorld.z;
+        }
+
+        bowstring.geometry.attributes.position.needsUpdate = true;
+        bowstring.geometry.computeBoundingSphere();
+    }
+
 
     renderer.render(scene, camera);
 }
