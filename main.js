@@ -173,10 +173,35 @@ async function placeScene(floorY) {
         scene.add(bow);
 
         // --- Bowstring Setup ---
-        const bowBox = new THREE.Box3().setFromObject(bow);
-        const bowHeight = bowBox.max.y - bowBox.min.y;
-        bow.userData.top = new THREE.Vector3(0, bowHeight / 2, 0);
-        bow.userData.bottom = new THREE.Vector3(0, -bowHeight / 2, 0);
+        bow.geometry.computeBoundingBox();
+        const bowBox = bow.geometry.boundingBox;
+        const bowSize = new THREE.Vector3();
+        bowBox.getSize(bowSize);
+        const bowCenter = new THREE.Vector3();
+        bowBox.getCenter(bowCenter);
+
+        // Determine the longest axis to be the bow's height
+        let heightAxis = 'y';
+        if (bowSize.x > bowSize.y && bowSize.x > bowSize.z) heightAxis = 'x';
+        else if (bowSize.z > bowSize.y) heightAxis = 'z';
+
+        // Assume the front of the bow is along the positive Z axis in local space
+        const frontZ = bowBox.max.z;
+
+        switch (heightAxis) {
+            case 'x':
+                bow.userData.top = new THREE.Vector3(bowBox.max.x, bowCenter.y, frontZ);
+                bow.userData.bottom = new THREE.Vector3(bowBox.min.x, bowCenter.y, frontZ);
+                break;
+            case 'y':
+                bow.userData.top = new THREE.Vector3(bowCenter.x, bowBox.max.y, frontZ);
+                bow.userData.bottom = new THREE.Vector3(bowCenter.x, bowBox.min.y, frontZ);
+                break;
+            case 'z': // This case is unlikely but handled. Assumes X is depth.
+                bow.userData.top = new THREE.Vector3(bowBox.max.x, bowCenter.y, bowBox.max.z);
+                bow.userData.bottom = new THREE.Vector3(bowBox.max.x, bowCenter.y, bowBox.min.z);
+                break;
+        }
 
         const stringMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
         const points = new Float32Array(3 * 3); // 3 vertices, 3 coordinates each
@@ -188,8 +213,42 @@ async function placeScene(floorY) {
     }
     if (arrowMesh) {
         arrowTemplate = arrowMesh;
-        const arrowBox = new THREE.Box3().setFromObject(arrowTemplate);
-        arrowTemplate.userData.length = arrowBox.max.z - arrowBox.min.z;
+        arrowTemplate.geometry.computeBoundingBox();
+        const arrowBox = arrowTemplate.geometry.boundingBox;
+        const arrowSize = new THREE.Vector3();
+        arrowBox.getSize(arrowSize);
+
+        // Determine the longest axis to be the 'forward' direction
+        let longestAxis = 'z';
+        let maxLength = arrowSize.z;
+        if (arrowSize.x > maxLength) {
+            longestAxis = 'x';
+            maxLength = arrowSize.x;
+        }
+        if (arrowSize.y > maxLength) {
+            longestAxis = 'y';
+            maxLength = arrowSize.y;
+        }
+
+        arrowTemplate.userData.length = maxLength;
+
+        // Define forward and nock vectors based on the longest axis.
+        // The nock is the back-end of the arrow.
+        switch (longestAxis) {
+            case 'x':
+                arrowTemplate.userData.forward = new THREE.Vector3(1, 0, 0);
+                arrowTemplate.userData.nock = new THREE.Vector3(arrowBox.min.x, 0, 0);
+                break;
+            case 'y':
+                arrowTemplate.userData.forward = new THREE.Vector3(0, 1, 0);
+                arrowTemplate.userData.nock = new THREE.Vector3(0, arrowBox.min.y, 0);
+                break;
+            default: // 'z'
+                arrowTemplate.userData.forward = new THREE.Vector3(0, 0, 1);
+                arrowTemplate.userData.nock = new THREE.Vector3(0, 0, arrowBox.min.z);
+                break;
+        }
+
         arrowTemplate.visible = false; // The template is never visible
     }
 }
@@ -287,25 +346,27 @@ function animate(timestamp, frame) {
         bow.quaternion.copy(finalRotation);
     }
 
-    if (arrowController && arrowObject && arrowObject.body) {
+    if (arrowController && arrowObject && arrowObject.body && bowController) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
-        const arrowLength = arrowTemplate.userData.length;
+        const { forward: localForward, nock: localNock } = arrowTemplate.userData;
 
-        // 1. Arrow points from arrow hand to bow hand
-        const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position);
-        const lookAtQuaternion = new THREE.Quaternion().setFromRotationMatrix(
-            new THREE.Matrix4().lookAt(arrowHand.position, bowHand.position, new THREE.Vector3(0, 1, 0))
-        );
+        // 1. Get world-space direction from arrow hand to bow hand
+        const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
 
-        // 2. Position the arrow so its nock is at the hand
-        const offset = direction.clone().normalize().multiplyScalar(arrowLength / 2);
-        const newArrowPosition = new THREE.Vector3().addVectors(arrowHand.position, offset);
+        // 2. Create rotation quaternion
+        const rotationQuaternion = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
 
-        // 3. Update the kinematic body
+        // 3. Calculate the rotated nock offset
+        const rotatedNockOffset = localNock.clone().applyQuaternion(rotationQuaternion);
+
+        // 4. Calculate the final position for the arrow's center
+        const newArrowPosition = new THREE.Vector3().subVectors(arrowHand.position, rotatedNockOffset);
+
+        // 5. Update the kinematic body
         arrowBody.setNextKinematicTranslation(newArrowPosition);
-        arrowBody.setNextKinematicRotation(lookAtQuaternion);
+        arrowBody.setNextKinematicRotation(rotationQuaternion);
     }
 
     // Sync all physics bodies with their meshes
