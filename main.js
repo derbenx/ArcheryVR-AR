@@ -173,6 +173,11 @@ async function placeScene(floorY) {
         scene.add(bow);
 
         // --- Bowstring Setup ---
+        const bowBox = new THREE.Box3().setFromObject(bow);
+        const bowHeight = bowBox.max.y - bowBox.min.y;
+        bow.userData.top = new THREE.Vector3(0, bowHeight / 2, 0);
+        bow.userData.bottom = new THREE.Vector3(0, -bowHeight / 2, 0);
+
         const stringMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
         const points = new Float32Array(3 * 3); // 3 vertices, 3 coordinates each
         const stringGeometry = new THREE.BufferGeometry();
@@ -183,25 +188,25 @@ async function placeScene(floorY) {
     }
     if (arrowMesh) {
         arrowTemplate = arrowMesh;
+        const arrowBox = new THREE.Box3().setFromObject(arrowTemplate);
+        arrowTemplate.userData.length = arrowBox.max.z - arrowBox.min.z;
         arrowTemplate.visible = false; // The template is never visible
     }
 }
 
 function shootArrow() {
-    if (!bow || !arrowObject || !arrowObject.body) return;
+    if (!bowController || !arrowController || !arrowObject || !arrowObject.body) return;
 
     // 1. Set arrow to be a dynamic body
     arrowObject.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
 
-    // 2. Calculate shooting direction from the bow's orientation, with correction
-    const direction = new THREE.Vector3(0, 0, -1); // Base direction
-    const offsetQuaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2);
-    const finalBowQuaternion = bow.quaternion.clone().multiply(offsetQuaternion);
-    direction.applyQuaternion(finalBowQuaternion);
-    direction.normalize();
+    // 2. Calculate shooting direction from arrow hand to bow hand
+    const arrowHand = renderer.xr.getController(arrowController.userData.id);
+    const bowHand = renderer.xr.getController(bowController.userData.id);
+    const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
 
     // 3. Calculate power based on draw distance
-    const drawDistance = bow.position.distanceTo(arrowObject.mesh.position);
+    const drawDistance = bowHand.position.distanceTo(arrowHand.position);
     const power = Math.min(drawDistance, 1.0) * 60; // Capped power
 
     // 4. Apply impulse
@@ -283,17 +288,24 @@ function animate(timestamp, frame) {
     }
 
     if (arrowController && arrowObject && arrowObject.body) {
-        const controller = renderer.xr.getController(arrowController.userData.id);
+        const arrowHand = renderer.xr.getController(arrowController.userData.id);
+        const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
+        const arrowLength = arrowTemplate.userData.length;
 
-        arrowBody.setNextKinematicTranslation(controller.position);
+        // 1. Arrow points from arrow hand to bow hand
+        const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position);
+        const lookAtQuaternion = new THREE.Quaternion().setFromRotationMatrix(
+            new THREE.Matrix4().lookAt(arrowHand.position, bowHand.position, new THREE.Vector3(0, 1, 0))
+        );
 
-        const bowQuaternion = bow ? bow.quaternion.clone() : controller.quaternion.clone();
-        // Corrective rotation for the arrow model
-        const offsetQuaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2);
-        bowQuaternion.multiply(offsetQuaternion);
+        // 2. Position the arrow so its nock is at the hand
+        const offset = direction.clone().normalize().multiplyScalar(arrowLength / 2);
+        const newArrowPosition = new THREE.Vector3().addVectors(arrowHand.position, offset);
 
-        arrowBody.setNextKinematicRotation(bowQuaternion);
+        // 3. Update the kinematic body
+        arrowBody.setNextKinematicTranslation(newArrowPosition);
+        arrowBody.setNextKinematicRotation(lookAtQuaternion);
     }
 
     // Sync all physics bodies with their meshes
@@ -312,9 +324,9 @@ function animate(timestamp, frame) {
     if (bow && bowstring) {
         const positions = bowstring.geometry.attributes.position.array;
 
-        // Define bowstring attachment points in the bow's local space
-        const topPointLocal = new THREE.Vector3(0, 0.6, 0);
-        const bottomPointLocal = new THREE.Vector3(0, -0.6, 0);
+        // Get bowstring attachment points from bow's userData
+        const topPointLocal = bow.userData.top;
+        const bottomPointLocal = bow.userData.bottom;
 
         // Transform these points to world space
         const topPointWorld = topPointLocal.clone().applyMatrix4(bow.matrixWorld);
