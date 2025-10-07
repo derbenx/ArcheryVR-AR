@@ -271,13 +271,15 @@ function animate(timestamp, frame) {
         // The arrow should point from the drawing hand to the bow hand.
         const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
 
-        // Orient the arrow
-        // Assuming the arrow model's long axis is Z
-        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction);
-
-        // Position the arrow so its nock is at the drawing hand's position
-        // The arrow's model origin is at its center.
+        // Position the arrow so its nock is at the drawing hand's position.
         mesh.position.copy(arrowHand.position).addScaledVector(direction, arrowLength / 2);
+
+        // Orient the arrow to point at the bow hand, keeping it horizontal.
+        // The lookAt() method makes the object's +Z axis point towards the target.
+        // Since our arrow model's tip is along its -Z axis, we need to make it
+        // look at a point in the opposite direction from the bow hand.
+        const lookAtTarget = new THREE.Vector3().copy(mesh.position).sub(direction);
+        mesh.lookAt(lookAtTarget);
 
         // Update the physics body to match.
         arrowBody.setNextKinematicTranslation(mesh.position);
