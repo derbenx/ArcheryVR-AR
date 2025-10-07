@@ -187,11 +187,12 @@ function shootArrow() {
 
     arrowObject.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
 
+    const arrowHand = renderer.xr.getController(arrowController.userData.id);
+    const bowHand = renderer.xr.getController(bowController.userData.id);
+
     // The shooting direction is determined by the bow's orientation
     const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(bow.quaternion);
 
-    const arrowHand = renderer.xr.getController(arrowController.userData.id);
-    const bowHand = renderer.xr.getController(bowController.userData.id);
     const { length: arrowLength } = arrowTemplate.userData;
     const drawDistance = Math.min(bowHand.position.distanceTo(arrowHand.position), arrowLength);
     const drawRatio = drawDistance / arrowLength;
