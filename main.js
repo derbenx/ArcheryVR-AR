@@ -20,11 +20,11 @@ const gravity = { x: 0.0, y: -5.0, z: 0.0 };
 let bow, target, bowstring, scoreboard;
 let arrowTemplate; // To clone new arrows from
 let arrowObject = null; // The currently active/nocked arrow { mesh, body }
-let firedArrows = []; // { mesh, body, collider, hasScored, score }
+let dozenArrows = []; // Store all 12 arrows for a full dozen round
 
 // Game State
 const gameState = {
-    arrowsShotThisEnd: 0,
+    arrowsShotInDozen: 0,
     isScoring: false,
 };
 
@@ -184,7 +184,6 @@ async function placeScene(floorY) {
     scoreboard.mesh.position.set(2.5, floorY + 1.5, -10); // Position it next to the target
     scene.add(scoreboard.mesh);
 
-
     // --- Bow and Arrow Template Setup ---
     bow = gltf.scene.getObjectByName('bow');
     const arrowMesh = gltf.scene.getObjectByName('arrow');
@@ -279,7 +278,6 @@ function shootArrow() {
     arrowObject.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
     arrowObject.collider.setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
 
-
     // 2. Calculate shooting direction from arrow hand to bow hand
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
@@ -292,44 +290,44 @@ function shootArrow() {
     // 4. Apply impulse
     arrowObject.body.applyImpulse(direction.multiplyScalar(power), true);
 
-    // 5. Move the fired arrow to the fired list and clear the active arrow
-    firedArrows.push(arrowObject);
-    gameState.arrowsShotThisEnd++;
+    // 5. Move the fired arrow to the dozen list and update game state
+    dozenArrows.push(arrowObject);
+    gameState.arrowsShotInDozen++;
     arrowObject = null;
+    arrowController = null;
 }
 
 function processEnd() {
-    if (gameState.isScoring) return;
-    gameState.isScoring = true;
+    // This function is called when an end of 3 arrows is complete.
+    // It updates the scoreboard and, if a dozen is complete, handles cleanup.
 
-    // 1. Get scores from the last 3 arrows
-    const endArrows = firedArrows.slice(-3);
+    // 1. Get scores from the relevant 3 arrows.
+    const startIdx = scoreboard.scores.length;
+    const endArrows = dozenArrows.slice(startIdx, startIdx + 3);
     const endScores = endArrows.map(arrow => arrow.score || 0);
 
     // 2. Update the scoreboard
     scoreboard.addScores(endScores);
 
-    // 3. After a delay, clean up the arrows for this end
-    setTimeout(() => {
-        endArrows.forEach(obj => {
-            if (obj.mesh) scene.remove(obj.mesh);
-            if (obj.body) world.removeRigidBody(obj.body);
-        });
+    // 3. Check if the dozen is complete
+    if (gameState.arrowsShotInDozen >= 12) {
+        gameState.isScoring = true; // Prevent shooting during cleanup
+        // After a delay, clean up the entire dozen
+        setTimeout(() => {
+            dozenArrows.forEach(obj => {
+                if (obj.mesh) scene.remove(obj.mesh);
+                if (obj.body) world.removeRigidBody(obj.body);
+            });
 
-        // Remove the processed arrows from the main array
-        firedArrows.splice(firedArrows.length - 3, 3);
+            // Reset for the next dozen
+            dozenArrows = [];
+            gameState.arrowsShotInDozen = 0;
+            scoreboard.clear(); // Clear the visual scoreboard
+            gameState.isScoring = false; // Allow shooting again
 
-        gameState.arrowsShotThisEnd = 0;
-        gameState.isScoring = false;
-
-        // If a full dozen has been shot, reset the board for the next one
-        if (scoreboard.scores.length >= 12) {
-             setTimeout(() => { scoreboard.clear(); }, 4000); // Show final score for a bit
-        }
-
-    }, 3000); // 3-second delay to view arrows
+        }, 5000); // 5-second delay to view final scores
+    }
 }
-
 
 function cleanupScene() {
     if (target) scene.remove(target);
@@ -338,7 +336,7 @@ function cleanupScene() {
     if (scoreboard) scene.remove(scoreboard.mesh);
     if (arrowObject && arrowObject.mesh) scene.remove(arrowObject.mesh);
     if (arrowObject && arrowObject.body) world.removeRigidBody(arrowObject.body);
-    firedArrows.forEach(obj => {
+    dozenArrows.forEach(obj => {
         if (obj.mesh) scene.remove(obj.mesh);
         if (obj.body) world.removeRigidBody(obj.body);
     });
@@ -354,13 +352,13 @@ function cleanupScene() {
     scoreboard = null;
     arrowTemplate = null;
     arrowObject = null;
-    firedArrows = [];
+    dozenArrows = [];
     bowController = null;
     arrowController = null;
     sceneSetupInitiated = false;
 
     // Reset game state
-    gameState.arrowsShotThisEnd = 0;
+    gameState.arrowsShotInDozen = 0;
     gameState.isScoring = false;
 
     console.log("Scene cleaned up.");
@@ -380,38 +378,40 @@ function animate(timestamp, frame) {
         }
     }
 
-    if (world) {
-        world.step(eventQueue);
-
-        eventQueue.drainCollisionEvents((handle1, handle2, started) => {
-            if (!started) return;
-
-            const collider1 = world.getCollider(handle1);
-            const collider2 = world.getCollider(handle2);
-
-            const firedArrow = firedArrows.find(a => a.collider.handle === handle1 || a.collider.handle === handle2);
-            if (!firedArrow || firedArrow.hasScored) return;
-
-            let targetCollider;
-            if (firedArrow.collider.handle === handle1) {
-                targetCollider = collider2;
-            } else {
-                targetCollider = collider1;
-            }
-
-            if (targetCollider.userData && typeof targetCollider.userData.score === 'number') {
-                firedArrow.hasScored = true;
-                firedArrow.score = targetCollider.userData.score;
-                firedArrow.body.setBodyType(RAPIER.RigidBodyType.Fixed); // Make it stick
-                console.log(`Arrow hit target, score: ${firedArrow.score}`);
-            }
-        });
-    }
+    if (world) world.step(eventQueue);
 
     // --- Game Loop Logic ---
-    if (gameState.arrowsShotThisEnd >= 3 && !gameState.isScoring) {
-        processEnd();
+    if (gameState.arrowsShotInDozen > 0 && gameState.arrowsShotInDozen % 3 === 0) {
+        const processedEnds = scoreboard.scores.length / 3;
+        const currentEnd = gameState.arrowsShotInDozen / 3;
+        if (currentEnd > processedEnds) {
+             processEnd();
+        }
     }
+
+    eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+        if (!started) return;
+
+        const collider1 = world.getCollider(handle1);
+        const collider2 = world.getCollider(handle2);
+
+        const arrow = dozenArrows.find(a => a.collider.handle === handle1 || a.collider.handle === handle2);
+        if (!arrow || arrow.hasScored) return;
+
+        let targetCollider;
+        if (arrow.collider.handle === handle1) {
+            targetCollider = collider2;
+        } else {
+            targetCollider = collider1;
+        }
+
+        if (targetCollider.userData && typeof targetCollider.userData.score === 'number') {
+            arrow.hasScored = true;
+            arrow.score = targetCollider.userData.score;
+            arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed); // Make it stick
+            console.log(`Arrow hit target, score: ${arrow.score}`);
+        }
+    });
 
     // --- Controller Logic ---
     if (renderer.xr.isPresenting) {
@@ -471,8 +471,8 @@ function animate(timestamp, frame) {
         arrowObject.mesh.position.copy(arrowObject.body.translation());
         arrowObject.mesh.quaternion.copy(arrowObject.body.rotation());
     }
-    firedArrows.forEach(obj => {
-        if (obj.body) {
+    dozenArrows.forEach(obj => {
+        if (obj.body && obj.body.bodyType() === RAPIER.RigidBodyType.Dynamic) { // Only sync dynamic arrows
             obj.mesh.position.copy(obj.body.translation());
             obj.mesh.quaternion.copy(obj.body.rotation());
         }

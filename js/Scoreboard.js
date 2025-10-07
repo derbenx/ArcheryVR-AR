@@ -101,7 +101,7 @@ class Scoreboard {
             if (score === undefined) continue;
 
             const scoreText = this.formatScore(score);
-            const col = (i < 6) ? i : i + 2; // Skip first END column
+            const col = (i < 6) ? i : i + 1; // Skip first END column
             const x = (col + 0.5) * cellWidth;
             ctx.fillText(scoreText, x, scoreY);
 
