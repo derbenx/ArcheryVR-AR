@@ -30,6 +30,13 @@ let arrowTemplate;
 let arrowObject = null;
 let firedArrows = [];
 
+// --- Scoreboard ---
+let score = 0;
+let scoreboard;
+let scoreCanvas, scoreContext, scoreTexture;
+let eventQueue;
+let colliderToScoreMap;
+
 // --- Controller and State ---
 let bowController = null;
 let arrowController = null;
@@ -55,6 +62,8 @@ async function init() {
 
     await RAPIER.init();
     world = new RAPIER.World(gravity);
+    eventQueue = new RAPIER.EventQueue(true);
+    colliderToScoreMap = new Map();
 
     const arButton = ARButton.createButton(renderer, { requiredFeatures: ['local-floor', 'plane-detection'] });
     document.body.appendChild(arButton);
@@ -62,6 +71,7 @@ async function init() {
     scene.add(planes);
 
     setupControllers();
+    createScoreboard();
 
     renderer.xr.addEventListener('sessionend', cleanupScene);
     window.addEventListener('resize', onWindowResize);
@@ -72,6 +82,37 @@ function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function createScoreboard() {
+    scoreCanvas = document.createElement('canvas');
+    scoreCanvas.width = 256;
+    scoreCanvas.height = 128;
+    scoreContext = scoreCanvas.getContext('2d');
+
+    scoreTexture = new THREE.CanvasTexture(scoreCanvas);
+
+    const material = new THREE.MeshBasicMaterial({ map: scoreTexture, transparent: true });
+    const geometry = new THREE.PlaneGeometry(0.5, 0.25);
+    scoreboard = new THREE.Mesh(geometry, material);
+
+    scoreboard.position.set(0, 0.3, -1);
+    camera.add(scoreboard);
+
+    updateScore(0); // Initialize with score 0
+}
+
+function updateScore(newScore) {
+    score = newScore;
+    scoreContext.clearRect(0, 0, scoreCanvas.width, scoreCanvas.height);
+    scoreContext.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    scoreContext.fillRect(0, 0, scoreCanvas.width, scoreCanvas.height);
+    scoreContext.fillStyle = 'white';
+    scoreContext.font = '48px sans-serif';
+    scoreContext.textAlign = 'center';
+    scoreContext.textBaseline = 'middle';
+    scoreContext.fillText(`Score: ${score}`, scoreCanvas.width / 2, scoreCanvas.height / 2);
+    scoreTexture.needsUpdate = true;
 }
 
 function setupControllers() {
@@ -108,10 +149,12 @@ function onSelectStart(event) {
             const body = world.createRigidBody(arrowBodyDesc);
             const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length / 2) // Rapier cuboids are half-extents
                 .setMass(0.1)
-                .setCollisionGroups(ARROW_GROUP_FILTER);
-            world.createCollider(colliderDesc, body);
+                .setCollisionGroups(ARROW_GROUP_FILTER)
+                .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+            const collider = world.createCollider(colliderDesc, body);
 
-            arrowObject = { mesh: newArrowMesh, body: body };
+            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false };
+            collider.userData = { type: 'arrow', arrow: arrowObject };
         }
         arrowController = controller;
     }
@@ -150,8 +193,17 @@ async function placeScene(floorY) {
         const colliderDesc = RAPIER.ColliderDesc.trimesh(
             ring.geometry.attributes.position.array,
             ring.geometry.index.array
-        ).setCollisionGroups(TARGET_GROUP_FILTER);
-        world.createCollider(colliderDesc, ringBody);
+        )
+        .setCollisionGroups(TARGET_GROUP_FILTER)
+        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+
+        const collider = world.createCollider(colliderDesc, ringBody);
+
+        let scoreValue = parseInt(ring.name);
+        if (scoreValue === 11) scoreValue = 10;
+        colliderToScoreMap.set(collider.handle, scoreValue);
+
+        collider.userData = { type: 'target' };
     });
 
     bow = gltf.scene.getObjectByName('bow');
@@ -250,6 +302,7 @@ function cleanupScene() {
     target = bow = bowstring = arrowTemplate = arrowObject = bowController = arrowController = floorBody = null;
     firedArrows = [];
     sceneSetupInitiated = false;
+    updateScore(0);
 }
 
 function animate(timestamp, frame) {
@@ -263,7 +316,37 @@ function animate(timestamp, frame) {
         }
     }
 
-    if (world) world.step();
+    if (world) world.step(eventQueue);
+
+    eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+        if (!started) return;
+
+        const collider1 = world.getCollider(handle1);
+        const collider2 = world.getCollider(handle2);
+
+        let arrow, targetCollider;
+
+        if (collider1?.userData?.type === 'arrow' && collider2?.userData?.type === 'target') {
+            arrow = collider1.userData.arrow;
+            targetCollider = collider2;
+        } else if (collider2?.userData?.type === 'arrow' && collider1?.userData?.type === 'target') {
+            arrow = collider2.userData.arrow;
+            targetCollider = collider1;
+        } else {
+            return;
+        }
+
+        if (arrow.hasScored) return;
+        arrow.hasScored = true;
+
+        const scoreValue = colliderToScoreMap.get(targetCollider.handle);
+        if (scoreValue !== undefined) {
+            updateScore(score + scoreValue);
+        }
+
+        world.removeRigidBody(arrow.body);
+        arrow.body = null;
+    });
 
     if (renderer.xr.isPresenting) {
         for (let i = 0; i < 2; i++) {
