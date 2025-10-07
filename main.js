@@ -5,29 +5,44 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { XRPlanes } from 'three/addons/webxr/XRPlanes.js';
 
-// Three.js and Global Variables
+// --- Three.js and Global Variables ---
 let camera, scene, renderer;
 let loader;
 let planes;
 let floorBody = null;
 
-// Physics
+// --- Physics ---
 let world;
-const gravity = { x: 0.0, y: -5.0, z: 0.0 }; // Reduced gravity for a more floaty arrow
+const gravity = { x: 0.0, y: -5.0, z: 0.0 };
 
-// Game Objects
+// --- Collision Groups ---
+const GROUP_ARROW = 1 << 0;
+const GROUP_TARGET = 1 << 1;
+const GROUP_FLOOR = 1 << 2;
+
+const ARROW_GROUP_FILTER = (GROUP_ARROW << 16) | (GROUP_TARGET | GROUP_FLOOR);
+const TARGET_GROUP_FILTER = (GROUP_TARGET << 16) | GROUP_ARROW;
+const FLOOR_GROUP_FILTER = (GROUP_FLOOR << 16) | GROUP_ARROW;
+
+// --- Game Objects ---
 let bow, target, bowstring;
-let arrowTemplate; // To clone new arrows from
-let arrowObject = null; // The currently active/nocked arrow { mesh, body }
-let firedArrows = []; // Store arrows that have been shot
+let arrowTemplate;
+let arrowObject = null;
+let firedArrows = [];
 
-// Controller and State
+// --- Scoreboard ---
+let score = 0;
+let scoreboard;
+let scoreCanvas, scoreContext, scoreTexture;
+let eventQueue;
+let colliderToScoreMap;
+
+// --- Controller and State ---
 let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
 
 async function init() {
-    // Basic Three.js setup
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;
@@ -45,27 +60,21 @@ async function init() {
 
     loader = new GLTFLoader();
 
-    // Physics World
     await RAPIER.init();
     world = new RAPIER.World(gravity);
+    eventQueue = new RAPIER.EventQueue(true);
+    colliderToScoreMap = new Map();
 
-    // AR Setup
-    const arButton = ARButton.createButton(renderer, {
-        requiredFeatures: ['local-floor', 'plane-detection']
-    });
+    const arButton = ARButton.createButton(renderer, { requiredFeatures: ['local-floor', 'plane-detection'] });
     document.body.appendChild(arButton);
     planes = new XRPlanes(renderer);
     scene.add(planes);
 
-    // Controller Setup
     setupControllers();
+    createScoreboard();
 
-    // Event Listeners
-    renderer.xr.addEventListener('sessionstart', () => console.log('XR session started.'));
     renderer.xr.addEventListener('sessionend', cleanupScene);
     window.addEventListener('resize', onWindowResize);
-
-    // Start render loop
     renderer.setAnimationLoop(animate);
 }
 
@@ -75,9 +84,39 @@ function onWindowResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
+function createScoreboard() {
+    scoreCanvas = document.createElement('canvas');
+    scoreCanvas.width = 256;
+    scoreCanvas.height = 128;
+    scoreContext = scoreCanvas.getContext('2d');
+
+    scoreTexture = new THREE.CanvasTexture(scoreCanvas);
+
+    const material = new THREE.MeshBasicMaterial({ map: scoreTexture, transparent: true });
+    const geometry = new THREE.PlaneGeometry(0.5, 0.25);
+    scoreboard = new THREE.Mesh(geometry, material);
+
+    scoreboard.position.set(0, 0.3, -1);
+    camera.add(scoreboard);
+
+    updateScore(0); // Initialize with score 0
+}
+
+function updateScore(newScore) {
+    score = newScore;
+    scoreContext.clearRect(0, 0, scoreCanvas.width, scoreCanvas.height);
+    scoreContext.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    scoreContext.fillRect(0, 0, scoreCanvas.width, scoreCanvas.height);
+    scoreContext.fillStyle = 'white';
+    scoreContext.font = '48px sans-serif';
+    scoreContext.textAlign = 'center';
+    scoreContext.textBaseline = 'middle';
+    scoreContext.fillText(`Score: ${score}`, scoreCanvas.width / 2, scoreCanvas.height / 2);
+    scoreTexture.needsUpdate = true;
+}
+
 function setupControllers() {
     const controllerModelFactory = new XRControllerModelFactory();
-
     for (let i = 0; i < 2; i++) {
         const controller = renderer.xr.getController(i);
         controller.userData.id = i;
@@ -87,8 +126,8 @@ function setupControllers() {
         grip.add(controllerModelFactory.createControllerModel(grip));
         scene.add(grip);
 
-        controller.addEventListener('connected', function(event) {
-            this.gamepad = event.data.gamepad;
+        controller.addEventListener('connected', (event) => {
+            controller.gamepad = event.data.gamepad;
         });
 
         controller.addEventListener('selectstart', onSelectStart);
@@ -98,60 +137,52 @@ function setupControllers() {
 
 function onSelectStart(event) {
     const controller = event.target;
-
-    // A non-bow controller can nock an arrow
     if (bowController && controller !== bowController) {
-        // If there's no arrow ready, create one.
         if (!arrowObject) {
-            if (!arrowTemplate) return; // Guard against missing template
+            if (!arrowTemplate) return;
 
             const newArrowMesh = arrowTemplate.clone();
             newArrowMesh.visible = true;
             scene.add(newArrowMesh);
 
-            const bowPosition = bow.position;
-            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
-                .setTranslation(bowPosition.x, bowPosition.y, bowPosition.z); // Start at bow
+            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
             const body = world.createRigidBody(arrowBodyDesc);
-            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, 0.4).setMass(0.1);
-            world.createCollider(colliderDesc, body);
+            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length / 2) // Rapier cuboids are half-extents
+                .setMass(0.1)
+                .setCollisionGroups(ARROW_GROUP_FILTER)
+                .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+            const collider = world.createCollider(colliderDesc, body);
 
-            arrowObject = { mesh: newArrowMesh, body: body };
+            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false };
+            collider.userData = { type: 'arrow', arrow: arrowObject };
         }
-
         arrowController = controller;
     }
 }
 
 function onSelectEnd(event) {
-    const controller = event.target;
-    if (arrowController === controller) {
+    if (arrowController === event.target) {
         shootArrow();
-        arrowController = null;
     }
 }
 
 async function placeScene(floorY) {
-    // Load model
     const gltf = await loader.loadAsync('3d/archery.glb');
 
-    // --- Invisible Floor ---
     if (floorBody) world.removeRigidBody(floorBody);
     const floorBodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(0, floorY, 0);
     floorBody = world.createRigidBody(floorBodyDesc);
-    const floorColliderDesc = RAPIER.ColliderDesc.cuboid(100, 0.1, 100);
+    const floorColliderDesc = RAPIER.ColliderDesc.cuboid(100, 0.1, 100).setCollisionGroups(FLOOR_GROUP_FILTER);
     world.createCollider(floorColliderDesc, floorBody);
 
-    // --- Target Setup ---
     target = new THREE.Group();
     gltf.scene.traverse(child => {
         if (child.isMesh && !isNaN(parseInt(child.name))) {
-            const ring = child.clone();
-            target.add(ring);
+            target.add(child.clone());
         }
     });
     target.position.set(0, floorY + 1.2, -10);
-    target.rotation.y = Math.PI; // Face the player
+    target.rotation.y = Math.PI;
     scene.add(target);
 
     target.children.forEach(ring => {
@@ -162,55 +193,38 @@ async function placeScene(floorY) {
         const colliderDesc = RAPIER.ColliderDesc.trimesh(
             ring.geometry.attributes.position.array,
             ring.geometry.index.array
-        );
-        world.createCollider(colliderDesc, ringBody);
+        )
+        .setCollisionGroups(TARGET_GROUP_FILTER)
+        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+
+        const collider = world.createCollider(colliderDesc, ringBody);
+
+        let scoreValue = parseInt(ring.name);
+        if (scoreValue === 11) scoreValue = 10;
+        colliderToScoreMap.set(collider.handle, scoreValue);
+
+        collider.userData = { type: 'target' };
     });
 
-    // --- Bow and Arrow Template Setup ---
     bow = gltf.scene.getObjectByName('bow');
-    const arrowMesh = gltf.scene.getObjectByName('arrow');
     if (bow) {
         scene.add(bow);
-
-        // --- Bowstring Setup ---
         bow.geometry.computeBoundingBox();
         const bowBox = bow.geometry.boundingBox;
-        const bowSize = new THREE.Vector3();
-        bowBox.getSize(bowSize);
-        const bowCenter = new THREE.Vector3();
-        bowBox.getCenter(bowCenter);
-
-        // Determine the longest axis to be the bow's height
-        let heightAxis = 'y';
-        if (bowSize.x > bowSize.y && bowSize.x > bowSize.z) heightAxis = 'x';
-        else if (bowSize.z > bowSize.y) heightAxis = 'z';
-
-        // Assume the back of the bow is along the minimum Z axis in local space
+        const bowCenterX = bowBox.getCenter(new THREE.Vector3()).x;
         const backZ = bowBox.min.z;
-
-        switch (heightAxis) {
-            case 'x':
-                bow.userData.top = new THREE.Vector3(bowBox.max.x, bowCenter.y, backZ);
-                bow.userData.bottom = new THREE.Vector3(bowBox.min.x, bowCenter.y, backZ);
-                break;
-            case 'y':
-                bow.userData.top = new THREE.Vector3(bowCenter.x, bowBox.max.y, backZ);
-                bow.userData.bottom = new THREE.Vector3(bowCenter.x, bowBox.min.y, backZ);
-                break;
-            case 'z': // This case is unlikely but handled. Assumes X is depth.
-                bow.userData.top = new THREE.Vector3(bowBox.max.x, bowCenter.y, bowBox.max.z);
-                bow.userData.bottom = new THREE.Vector3(bowBox.max.x, bowCenter.y, bowBox.min.z);
-                break;
-        }
+        bow.userData.top = new THREE.Vector3(bowCenterX, bowBox.max.y, backZ);
+        bow.userData.bottom = new THREE.Vector3(bowCenterX, bowBox.min.y, backZ);
 
         const stringMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
-        const points = new Float32Array(3 * 3); // 3 vertices, 3 coordinates each
+        const points = new Float32Array(3 * 3);
         const stringGeometry = new THREE.BufferGeometry();
         stringGeometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
-
         bowstring = new THREE.Line(stringGeometry, stringMaterial);
         scene.add(bowstring);
     }
+
+    const arrowMesh = gltf.scene.getObjectByName('arrow');
     if (arrowMesh) {
         arrowTemplate = arrowMesh;
         arrowTemplate.geometry.computeBoundingBox();
@@ -218,114 +232,126 @@ async function placeScene(floorY) {
         const arrowSize = new THREE.Vector3();
         arrowBox.getSize(arrowSize);
 
-        // Determine the longest axis to be the 'forward' direction
-        let longestAxis = 'z';
-        let maxLength = arrowSize.z;
-        if (arrowSize.x > maxLength) {
-            longestAxis = 'x';
-            maxLength = arrowSize.x;
-        }
-        if (arrowSize.y > maxLength) {
-            longestAxis = 'y';
-            maxLength = arrowSize.y;
-        }
+        const maxDim = Math.max(arrowSize.x, arrowSize.y, arrowSize.z);
+        arrowTemplate.userData.length = maxDim;
 
-        arrowTemplate.userData.length = maxLength;
+        const localForward = new THREE.Vector3();
+        const localNock = new THREE.Vector3();
+        const center = arrowBox.getCenter(new THREE.Vector3());
 
-        // Define forward and nock vectors based on the longest axis.
-        // The nock is the back-end of the arrow.
-        switch (longestAxis) {
-            case 'x':
-                arrowTemplate.userData.forward = new THREE.Vector3(1, 0, 0);
-                arrowTemplate.userData.nock = new THREE.Vector3(arrowBox.min.x, 0, 0);
-                break;
-            case 'y':
-                arrowTemplate.userData.forward = new THREE.Vector3(0, 1, 0);
-                arrowTemplate.userData.nock = new THREE.Vector3(0, arrowBox.min.y, 0);
-                break;
-            default: // 'z'
-                arrowTemplate.userData.forward = new THREE.Vector3(0, 0, 1);
-                arrowTemplate.userData.nock = new THREE.Vector3(0, 0, arrowBox.min.z);
-                break;
+        // Determine the longest axis and assume the tip is at the negative end and nock at the positive end.
+        if (arrowSize.x === maxDim) {
+            localForward.set(-1, 0, 0);
+            localNock.set(arrowBox.max.x, center.y, center.z);
+        } else if (arrowSize.y === maxDim) {
+            localForward.set(0, -1, 0);
+            localNock.set(center.x, arrowBox.max.y, center.z);
+        } else {
+            localForward.set(0, 0, -1);
+            localNock.set(center.x, center.y, arrowBox.max.z);
         }
 
-        arrowTemplate.visible = false; // The template is never visible
+        arrowTemplate.userData.forward = localForward;
+        arrowTemplate.userData.nock = localNock;
+
+        arrowTemplate.visible = false;
     }
 }
 
 function shootArrow() {
     if (!bowController || !arrowController || !arrowObject || !arrowObject.body) return;
 
-    // 1. Set arrow to be a dynamic body
-    arrowObject.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
+    const { mesh, body } = arrowObject;
 
-    // 2. Calculate shooting direction from arrow hand to bow hand
+    body.setTranslation(mesh.position, true);
+    body.setRotation(mesh.quaternion, true);
+    body.setBodyType(RAPIER.RigidBodyType.Dynamic);
+
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
-    const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
 
-    // 3. Calculate power based on draw distance
-    const drawDistance = bowHand.position.distanceTo(arrowHand.position);
-    const power = Math.min(drawDistance, 1.0) * 60; // Capped power
+    const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
+    const drawDistance = Math.min(arrowHand.position.distanceTo(bowHand.position), arrowTemplate.userData.length);
+    const drawRatio = drawDistance / arrowTemplate.userData.length;
+    const maxSpeed = 30;
+    const speed = drawRatio * maxSpeed;
 
-    // 4. Apply impulse
-    arrowObject.body.applyImpulse(direction.multiplyScalar(power), true);
+    body.setLinvel(worldDirection.multiplyScalar(speed), true);
 
-    // 5. Move the fired arrow to the fired list and clear the active arrow
     firedArrows.push(arrowObject);
     arrowObject = null;
+    arrowController = null;
 }
 
 function cleanupScene() {
     if (target) scene.remove(target);
     if (bow) scene.remove(bow);
     if (bowstring) scene.remove(bowstring);
-    if (arrowObject && arrowObject.mesh) scene.remove(arrowObject.mesh);
-    if (arrowObject && arrowObject.body) world.removeRigidBody(arrowObject.body);
+
+    if (arrowObject) {
+        if (arrowObject.mesh) scene.remove(arrowObject.mesh);
+        if (arrowObject.body) world.removeRigidBody(arrowObject.body);
+    }
     firedArrows.forEach(obj => {
         if (obj.mesh) scene.remove(obj.mesh);
         if (obj.body) world.removeRigidBody(obj.body);
     });
 
-    if (floorBody) {
-        world.removeRigidBody(floorBody);
-        floorBody = null;
-    }
+    if (floorBody) world.removeRigidBody(floorBody);
 
-    target = null;
-    bow = null;
-    bowstring = null;
-    arrowTemplate = null;
-    arrowObject = null;
+    target = bow = bowstring = arrowTemplate = arrowObject = bowController = arrowController = floorBody = null;
     firedArrows = [];
-    bowController = null;
-    arrowController = null;
     sceneSetupInitiated = false;
-    console.log("Scene cleaned up.");
+    updateScore(0);
 }
 
 function animate(timestamp, frame) {
-    // --- Scene Placement ---
     if (renderer.xr.isPresenting && !sceneSetupInitiated && frame) {
         if (planes.children.length > 0) {
             let floorY = 0;
-            planes.children.forEach(plane => {
-                floorY = Math.min(floorY, plane.position.y);
-            });
+            planes.children.forEach(plane => { floorY = Math.min(floorY, plane.position.y); });
             placeScene(floorY);
             sceneSetupInitiated = true;
-            planes.visible = false; // Hide planes once scene is placed
+            planes.visible = false;
         }
     }
 
-    if (world) world.step();
+    if (world) world.step(eventQueue);
 
-    // --- Controller Logic ---
+    eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+        if (!started) return;
+
+        const collider1 = world.getCollider(handle1);
+        const collider2 = world.getCollider(handle2);
+
+        let arrow, targetCollider;
+
+        if (collider1?.userData?.type === 'arrow' && collider2?.userData?.type === 'target') {
+            arrow = collider1.userData.arrow;
+            targetCollider = collider2;
+        } else if (collider2?.userData?.type === 'arrow' && collider1?.userData?.type === 'target') {
+            arrow = collider2.userData.arrow;
+            targetCollider = collider1;
+        } else {
+            return;
+        }
+
+        if (arrow.hasScored) return;
+        arrow.hasScored = true;
+
+        const scoreValue = colliderToScoreMap.get(targetCollider.handle);
+        if (scoreValue !== undefined) {
+            updateScore(score + scoreValue);
+        }
+
+        world.removeRigidBody(arrow.body);
+        arrow.body = null;
+    });
+
     if (renderer.xr.isPresenting) {
         for (let i = 0; i < 2; i++) {
             const controller = renderer.xr.getController(i);
             if (controller && controller.gamepad) {
-                // Grip button to hold the bow
                 if (controller.gamepad.buttons[1].pressed) {
                     if (!bowController) bowController = controller;
                 } else {
@@ -335,14 +361,11 @@ function animate(timestamp, frame) {
         }
     }
 
-    // --- Update Game Objects ---
     if (bowController && bow) {
         const controller = renderer.xr.getController(bowController.userData.id);
-        bow.position.copy(controller.position);
-
-        // Apply a 180-degree rotation to correct the bow's orientation
         const offsetRotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
         const finalRotation = controller.quaternion.clone().multiply(offsetRotation);
+        bow.position.copy(controller.position);
         bow.quaternion.copy(finalRotation);
     }
 
@@ -350,34 +373,40 @@ function animate(timestamp, frame) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
-        const { forward: localForward, nock: localNock } = arrowTemplate.userData;
+        const mesh = arrowObject.mesh;
+        const { forward: localForward, nock: localNock, length: arrowLength } = arrowTemplate.userData;
 
-        // 1. Get world-space direction from arrow hand to bow hand
-        const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
+        // 1. Calculate the direction from the drawing hand to the bow hand.
+        const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position);
+        const drawDistance = worldDirection.length();
+        worldDirection.normalize();
 
-        // 2. Create rotation quaternion
-        const rotationQuaternion = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
+        // 2. Create the rotation to align the arrow model with this world direction.
+        const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
+        mesh.quaternion.copy(rotation);
 
-        // Apply a 180-degree spin to correct the model's orientation
-        const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-        rotationQuaternion.multiply(spin);
+        // 3. Calculate the offset from the model's origin to its nock, in world space.
+        const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
 
-        // 3. Calculate the rotated nock offset
-        const rotatedNockOffset = localNock.clone().applyQuaternion(rotationQuaternion);
+        // 4. Calculate the clamped position for the nock.
+        const clampedDrawDistance = Math.min(drawDistance, arrowLength);
+        const clampedNockPosition = new THREE.Vector3().copy(bowHand.position).sub(worldDirection.clone().multiplyScalar(clampedDrawDistance));
 
-        // 4. Calculate the final position for the arrow's center
-        const newArrowPosition = new THREE.Vector3().subVectors(arrowHand.position, rotatedNockOffset);
+        // 5. Set the arrow's final position.
+        mesh.position.copy(clampedNockPosition).sub(rotatedNockOffset);
 
-        // 5. Update the kinematic body
-        arrowBody.setNextKinematicTranslation(newArrowPosition);
-        arrowBody.setNextKinematicRotation(rotationQuaternion);
+        // 6. Update the physics body.
+        arrowBody.setNextKinematicTranslation(mesh.position);
+        arrowBody.setNextKinematicRotation(mesh.quaternion);
+
+        // Store the clamped nock position for the bowstring visual.
+        arrowObject.nockPosition = clampedNockPosition;
+
+    } else if (arrowObject) {
+        arrowObject.nockPosition = null;
     }
 
-    // Sync all physics bodies with their meshes
-    if (arrowObject && arrowObject.body) {
-        arrowObject.mesh.position.copy(arrowObject.body.translation());
-        arrowObject.mesh.quaternion.copy(arrowObject.body.rotation());
-    }
+
     firedArrows.forEach(obj => {
         if (obj.body) {
             obj.mesh.position.copy(obj.body.translation());
@@ -385,54 +414,26 @@ function animate(timestamp, frame) {
         }
     });
 
-    // --- Update Bowstring ---
     if (bow && bowstring) {
         const positions = bowstring.geometry.attributes.position.array;
-
-        // Get bowstring attachment points from bow's userData
         const topPointLocal = bow.userData.top;
         const bottomPointLocal = bow.userData.bottom;
-
-        // Transform these points to world space
         const topPointWorld = topPointLocal.clone().applyMatrix4(bow.matrixWorld);
         const bottomPointWorld = bottomPointLocal.clone().applyMatrix4(bow.matrixWorld);
 
-        if (arrowController) {
-            // Drawn state: top -> controller -> bottom
-            const controllerPosition = renderer.xr.getController(arrowController.userData.id).position;
-
-            positions[0] = topPointWorld.x;
-            positions[1] = topPointWorld.y;
-            positions[2] = topPointWorld.z;
-
-            positions[3] = controllerPosition.x;
-            positions[4] = controllerPosition.y;
-            positions[5] = controllerPosition.z;
-
-            positions[6] = bottomPointWorld.x;
-            positions[7] = bottomPointWorld.y;
-            positions[8] = bottomPointWorld.z;
-
+        if (arrowController && arrowObject && arrowObject.nockPosition) {
+            const nockPosition = arrowObject.nockPosition;
+            positions[0] = topPointWorld.x; positions[1] = topPointWorld.y; positions[2] = topPointWorld.z;
+            positions[3] = nockPosition.x; positions[4] = nockPosition.y; positions[5] = nockPosition.z;
+            positions[6] = bottomPointWorld.x; positions[7] = bottomPointWorld.y; positions[8] = bottomPointWorld.z;
         } else {
-            // Idle state: top -> bottom
-            positions[0] = topPointWorld.x;
-            positions[1] = topPointWorld.y;
-            positions[2] = topPointWorld.z;
-
-            positions[3] = bottomPointWorld.x;
-            positions[4] = bottomPointWorld.y;
-            positions[5] = bottomPointWorld.z;
-
-            // Hide the second segment by making it zero-length
-            positions[6] = bottomPointWorld.x;
-            positions[7] = bottomPointWorld.y;
-            positions[8] = bottomPointWorld.z;
+            positions[0] = topPointWorld.x; positions[1] = topPointWorld.y; positions[2] = topPointWorld.z;
+            positions[3] = bottomPointWorld.x; positions[4] = bottomPointWorld.y; positions[5] = bottomPointWorld.z;
+            positions[6] = bottomPointWorld.x; positions[7] = bottomPointWorld.y; positions[8] = bottomPointWorld.z;
         }
-
         bowstring.geometry.attributes.position.needsUpdate = true;
         bowstring.geometry.computeBoundingSphere();
     }
-
 
     renderer.render(scene, camera);
 }
