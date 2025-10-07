@@ -4,6 +4,7 @@ import { ARButton } from 'three/addons/webxr/ARButton.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { XRPlanes } from 'three/addons/webxr/XRPlanes.js';
+import { Scoreboard } from './js/Scoreboard.js';
 
 // Three.js and Global Variables
 let camera, scene, renderer;
@@ -12,14 +13,20 @@ let planes;
 let floorBody = null;
 
 // Physics
-let world;
-const gravity = { x: 0.0, y: -5.0, z: 0.0 }; // Reduced gravity for a more floaty arrow
+let world, eventQueue;
+const gravity = { x: 0.0, y: -5.0, z: 0.0 };
 
 // Game Objects
-let bow, target, bowstring;
+let bow, target, bowstring, scoreboard;
 let arrowTemplate; // To clone new arrows from
 let arrowObject = null; // The currently active/nocked arrow { mesh, body }
-let firedArrows = []; // Store arrows that have been shot
+let firedArrows = []; // { mesh, body, collider, hasScored, score }
+
+// Game State
+const gameState = {
+    arrowsShotThisEnd: 0,
+    isScoring: false,
+};
 
 // Controller and State
 let bowController = null;
@@ -48,6 +55,7 @@ async function init() {
     // Physics World
     await RAPIER.init();
     world = new RAPIER.World(gravity);
+    eventQueue = new RAPIER.EventQueue(true);
 
     // AR Setup
     const arButton = ARButton.createButton(renderer, {
@@ -114,9 +122,9 @@ function onSelectStart(event) {
                 .setTranslation(bowPosition.x, bowPosition.y, bowPosition.z); // Start at bow
             const body = world.createRigidBody(arrowBodyDesc);
             const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, 0.4).setMass(0.1);
-            world.createCollider(colliderDesc, body);
+            const collider = world.createCollider(colliderDesc, body);
 
-            arrowObject = { mesh: newArrowMesh, body: body };
+            arrowObject = { mesh: newArrowMesh, body: body, collider: collider, hasScored: false, score: 0 };
         }
 
         arrowController = controller;
@@ -162,9 +170,20 @@ async function placeScene(floorY) {
         const colliderDesc = RAPIER.ColliderDesc.trimesh(
             ring.geometry.attributes.position.array,
             ring.geometry.index.array
-        );
-        world.createCollider(colliderDesc, ringBody);
+        ).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+
+        const ringCollider = world.createCollider(colliderDesc, ringBody);
+
+        // Store the score value in the collider's user data
+        const score = parseInt(ring.name);
+        ringCollider.userData = { score: score };
     });
+
+    // --- Scoreboard ---
+    scoreboard = new Scoreboard();
+    scoreboard.mesh.position.set(2.5, floorY + 1.5, -10); // Position it next to the target
+    scene.add(scoreboard.mesh);
+
 
     // --- Bow and Arrow Template Setup ---
     bow = gltf.scene.getObjectByName('bow');
@@ -254,10 +273,12 @@ async function placeScene(floorY) {
 }
 
 function shootArrow() {
-    if (!bowController || !arrowController || !arrowObject || !arrowObject.body) return;
+    if (!bowController || !arrowController || !arrowObject || !arrowObject.body || gameState.isScoring) return;
 
-    // 1. Set arrow to be a dynamic body
+    // 1. Set arrow to be a dynamic body and enable collision events
     arrowObject.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
+    arrowObject.collider.setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+
 
     // 2. Calculate shooting direction from arrow hand to bow hand
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
@@ -273,13 +294,48 @@ function shootArrow() {
 
     // 5. Move the fired arrow to the fired list and clear the active arrow
     firedArrows.push(arrowObject);
+    gameState.arrowsShotThisEnd++;
     arrowObject = null;
 }
+
+function processEnd() {
+    if (gameState.isScoring) return;
+    gameState.isScoring = true;
+
+    // 1. Get scores from the last 3 arrows
+    const endArrows = firedArrows.slice(-3);
+    const endScores = endArrows.map(arrow => arrow.score || 0);
+
+    // 2. Update the scoreboard
+    scoreboard.addScores(endScores);
+
+    // 3. After a delay, clean up the arrows for this end
+    setTimeout(() => {
+        endArrows.forEach(obj => {
+            if (obj.mesh) scene.remove(obj.mesh);
+            if (obj.body) world.removeRigidBody(obj.body);
+        });
+
+        // Remove the processed arrows from the main array
+        firedArrows.splice(firedArrows.length - 3, 3);
+
+        gameState.arrowsShotThisEnd = 0;
+        gameState.isScoring = false;
+
+        // If a full dozen has been shot, reset the board for the next one
+        if (scoreboard.scores.length >= 12) {
+             setTimeout(() => { scoreboard.clear(); }, 4000); // Show final score for a bit
+        }
+
+    }, 3000); // 3-second delay to view arrows
+}
+
 
 function cleanupScene() {
     if (target) scene.remove(target);
     if (bow) scene.remove(bow);
     if (bowstring) scene.remove(bowstring);
+    if (scoreboard) scene.remove(scoreboard.mesh);
     if (arrowObject && arrowObject.mesh) scene.remove(arrowObject.mesh);
     if (arrowObject && arrowObject.body) world.removeRigidBody(arrowObject.body);
     firedArrows.forEach(obj => {
@@ -295,12 +351,18 @@ function cleanupScene() {
     target = null;
     bow = null;
     bowstring = null;
+    scoreboard = null;
     arrowTemplate = null;
     arrowObject = null;
     firedArrows = [];
     bowController = null;
     arrowController = null;
     sceneSetupInitiated = false;
+
+    // Reset game state
+    gameState.arrowsShotThisEnd = 0;
+    gameState.isScoring = false;
+
     console.log("Scene cleaned up.");
 }
 
@@ -318,7 +380,38 @@ function animate(timestamp, frame) {
         }
     }
 
-    if (world) world.step();
+    if (world) {
+        world.step(eventQueue);
+
+        eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+            if (!started) return;
+
+            const collider1 = world.getCollider(handle1);
+            const collider2 = world.getCollider(handle2);
+
+            const firedArrow = firedArrows.find(a => a.collider.handle === handle1 || a.collider.handle === handle2);
+            if (!firedArrow || firedArrow.hasScored) return;
+
+            let targetCollider;
+            if (firedArrow.collider.handle === handle1) {
+                targetCollider = collider2;
+            } else {
+                targetCollider = collider1;
+            }
+
+            if (targetCollider.userData && typeof targetCollider.userData.score === 'number') {
+                firedArrow.hasScored = true;
+                firedArrow.score = targetCollider.userData.score;
+                firedArrow.body.setBodyType(RAPIER.RigidBodyType.Fixed); // Make it stick
+                console.log(`Arrow hit target, score: ${firedArrow.score}`);
+            }
+        });
+    }
+
+    // --- Game Loop Logic ---
+    if (gameState.arrowsShotThisEnd >= 3 && !gameState.isScoring) {
+        processEnd();
+    }
 
     // --- Controller Logic ---
     if (renderer.xr.isPresenting) {
