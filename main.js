@@ -190,8 +190,8 @@ function shootArrow() {
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
 
-    // The shooting direction is determined by the bow's orientation
-    const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(bow.quaternion);
+    // The shooting direction is from the arrow hand to the bow hand
+    const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
 
     const { length: arrowLength } = arrowTemplate.userData;
     const drawDistance = Math.min(bowHand.position.distanceTo(arrowHand.position), arrowLength);
@@ -263,14 +263,21 @@ function animate(timestamp, frame) {
 
     if (arrowController && arrowObject && arrowObject.body && bowController) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
+        const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
         const mesh = arrowObject.mesh;
+        const { length: arrowLength } = arrowTemplate.userData;
 
-        // The arrow's rotation should match the bow's rotation exactly.
-        mesh.quaternion.copy(bow.quaternion);
+        // The arrow should point from the drawing hand to the bow hand.
+        const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
 
-        // The arrow's position should be at the drawing hand.
-        mesh.position.copy(arrowHand.position);
+        // Orient the arrow
+        // Assuming the arrow model's long axis is Z
+        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction);
+
+        // Position the arrow so its nock is at the drawing hand's position
+        // The arrow's model origin is at its center.
+        mesh.position.copy(arrowHand.position).addScaledVector(direction, arrowLength / 2);
 
         // Update the physics body to match.
         arrowBody.setNextKinematicTranslation(mesh.position);
