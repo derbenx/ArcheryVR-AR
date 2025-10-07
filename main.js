@@ -266,7 +266,8 @@ function shootArrow() {
 
     // 3. Calculate power based on draw distance
     const drawDistance = bowHand.position.distanceTo(arrowHand.position);
-    const power = Math.min(drawDistance, 1.0) * 60; // Capped power
+    const maxDraw = arrowObject.mesh.userData.length || 1.0;
+    const power = Math.min(drawDistance, maxDraw) * 60; // Capped power
 
     // 4. Apply impulse
     arrowObject.body.applyImpulse(direction.multiplyScalar(power), true);
@@ -357,10 +358,6 @@ function animate(timestamp, frame) {
 
         // 2. Create rotation quaternion
         const rotationQuaternion = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
-
-        // Apply a 180-degree spin to correct the model's orientation
-        const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-        rotationQuaternion.multiply(spin);
 
         // 3. Calculate the rotated nock offset
         const rotatedNockOffset = localNock.clone().applyQuaternion(rotationQuaternion);
