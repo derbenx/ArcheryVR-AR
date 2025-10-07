@@ -4,6 +4,7 @@ import { ARButton } from 'three/addons/webxr/ARButton.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { XRPlanes } from 'three/addons/webxr/XRPlanes.js';
+import { Scoreboard } from './js/Scoreboard.js';
 
 // --- Three.js and Global Variables ---
 let camera, scene, renderer;
@@ -30,10 +31,16 @@ let arrowTemplate;
 let arrowObject = null;
 let firedArrows = [];
 
+// --- Game State ---
+const GameState = {
+    SHOOTING: 'shooting',
+    INSPECTING: 'inspecting', // Target is close for inspection
+    ROUND_OVER: 'round_over'  // Round is over, processing score
+};
+let gameState = GameState.SHOOTING;
+
 // --- Scoreboard ---
-let score = 0;
 let scoreboard;
-let scoreCanvas, scoreContext, scoreTexture;
 let eventQueue;
 let colliderToScoreMap;
 
@@ -41,6 +48,7 @@ let colliderToScoreMap;
 let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
+let aButtonPressed = [false, false]; // To track 'A' button state for each controller
 
 async function init() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -71,7 +79,14 @@ async function init() {
     scene.add(planes);
 
     setupControllers();
-    createScoreboard();
+
+    // Create and position the scoreboard
+    scoreboard = new Scoreboard();
+    const scoreboardMesh = scoreboard.getMesh();
+    // Position it in a fixed location in the world.
+    scoreboardMesh.position.set(0, 1.6, -2.5);
+    scene.add(scoreboardMesh);
+
 
     renderer.xr.addEventListener('sessionend', cleanupScene);
     window.addEventListener('resize', onWindowResize);
@@ -82,37 +97,6 @@ function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-}
-
-function createScoreboard() {
-    scoreCanvas = document.createElement('canvas');
-    scoreCanvas.width = 256;
-    scoreCanvas.height = 128;
-    scoreContext = scoreCanvas.getContext('2d');
-
-    scoreTexture = new THREE.CanvasTexture(scoreCanvas);
-
-    const material = new THREE.MeshBasicMaterial({ map: scoreTexture, transparent: true });
-    const geometry = new THREE.PlaneGeometry(0.5, 0.25);
-    scoreboard = new THREE.Mesh(geometry, material);
-
-    scoreboard.position.set(0, 0.3, -1);
-    camera.add(scoreboard);
-
-    updateScore(0); // Initialize with score 0
-}
-
-function updateScore(newScore) {
-    score = newScore;
-    scoreContext.clearRect(0, 0, scoreCanvas.width, scoreCanvas.height);
-    scoreContext.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    scoreContext.fillRect(0, 0, scoreCanvas.width, scoreCanvas.height);
-    scoreContext.fillStyle = 'white';
-    scoreContext.font = '48px sans-serif';
-    scoreContext.textAlign = 'center';
-    scoreContext.textBaseline = 'middle';
-    scoreContext.fillText(`Score: ${score}`, scoreCanvas.width / 2, scoreCanvas.height / 2);
-    scoreTexture.needsUpdate = true;
 }
 
 function setupControllers() {
@@ -138,7 +122,8 @@ function setupControllers() {
 function onSelectStart(event) {
     const controller = event.target;
     if (bowController && controller !== bowController) {
-        if (!arrowObject) {
+        // Only allow drawing a new arrow if in SHOOTING state
+        if (gameState === GameState.SHOOTING && !arrowObject) {
             if (!arrowTemplate) return;
 
             const newArrowMesh = arrowTemplate.clone();
@@ -153,7 +138,7 @@ function onSelectStart(event) {
                 .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
             const collider = world.createCollider(colliderDesc, body);
 
-            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false };
+            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false, score: 'M' }; // Default score is Miss
             collider.userData = { type: 'arrow', arrow: arrowObject };
         }
         arrowController = controller;
@@ -173,7 +158,8 @@ async function placeScene(floorY) {
     const floorBodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(0, floorY, 0);
     floorBody = world.createRigidBody(floorBodyDesc);
     const floorColliderDesc = RAPIER.ColliderDesc.cuboid(100, 0.1, 100).setCollisionGroups(FLOOR_GROUP_FILTER);
-    world.createCollider(floorColliderDesc, floorBody);
+    const floorCollider = world.createCollider(floorColliderDesc, floorBody);
+    floorCollider.userData = { type: 'floor' };
 
     target = new THREE.Group();
     gltf.scene.traverse(child => {
@@ -185,11 +171,17 @@ async function placeScene(floorY) {
     target.rotation.y = Math.PI;
     scene.add(target);
 
+    target.userData.originalPosition = target.position.clone();
+    target.userData.scoringPosition = new THREE.Vector3(0, target.position.y, -3);
+    target.userData.inScoringPosition = false;
+    target.userData.ringBodies = [];
+
     target.children.forEach(ring => {
-        const ringBodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(
+        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
             target.position.x, target.position.y, target.position.z
         ).setRotation(target.quaternion);
         const ringBody = world.createRigidBody(ringBodyDesc);
+        target.userData.ringBodies.push(ringBody);
         const colliderDesc = RAPIER.ColliderDesc.trimesh(
             ring.geometry.attributes.position.array,
             ring.geometry.index.array
@@ -199,8 +191,7 @@ async function placeScene(floorY) {
 
         const collider = world.createCollider(colliderDesc, ringBody);
 
-        let scoreValue = parseInt(ring.name);
-        if (scoreValue === 11) scoreValue = 10;
+        let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
 
         collider.userData = { type: 'target' };
@@ -279,12 +270,22 @@ function shootArrow() {
     body.setLinvel(worldDirection.multiplyScalar(speed), true);
 
     firedArrows.push(arrowObject);
+
+    if (firedArrows.length % 3 === 0) {
+        gameState = GameState.INSPECTING;
+        console.log("Entering INSPECTING state.");
+    }
+
     arrowObject = null;
     arrowController = null;
 }
 
 function cleanupScene() {
-    if (target) scene.remove(target);
+    if (target) {
+        // Remove physics bodies associated with the target
+        target.userData.ringBodies.forEach(body => world.removeRigidBody(body));
+        scene.remove(target);
+    }
     if (bow) scene.remove(bow);
     if (bowstring) scene.remove(bowstring);
 
@@ -302,7 +303,7 @@ function cleanupScene() {
     target = bow = bowstring = arrowTemplate = arrowObject = bowController = arrowController = floorBody = null;
     firedArrows = [];
     sceneSetupInitiated = false;
-    updateScore(0);
+    if (scoreboard) scoreboard.reset();
 }
 
 function animate(timestamp, frame) {
@@ -324,41 +325,100 @@ function animate(timestamp, frame) {
         const collider1 = world.getCollider(handle1);
         const collider2 = world.getCollider(handle2);
 
-        let arrow, targetCollider;
-
-        if (collider1?.userData?.type === 'arrow' && collider2?.userData?.type === 'target') {
+        let arrow, otherCollider;
+        if (collider1?.userData?.type === 'arrow') {
             arrow = collider1.userData.arrow;
-            targetCollider = collider2;
-        } else if (collider2?.userData?.type === 'arrow' && collider1?.userData?.type === 'target') {
+            otherCollider = collider2;
+        } else if (collider2?.userData?.type === 'arrow') {
             arrow = collider2.userData.arrow;
-            targetCollider = collider1;
+            otherCollider = collider1;
         } else {
             return;
         }
 
         if (arrow.hasScored) return;
-        arrow.hasScored = true;
 
-        const scoreValue = colliderToScoreMap.get(targetCollider.handle);
-        if (scoreValue !== undefined) {
-            updateScore(score + scoreValue);
+        if (otherCollider?.userData?.type === 'target') {
+            arrow.hasScored = true;
+            const scoreValue = colliderToScoreMap.get(otherCollider.handle);
+            arrow.score = scoreValue;
+            console.log(`Arrow hit target for score: ${arrow.score}`);
+
+            // To make arrow "stick," remove its physics body and parent it to the target
+            if (arrow.body) {
+                // 1. Get current world transform of the arrow
+                const worldPos = arrow.mesh.position.clone();
+                const worldQuat = arrow.mesh.quaternion.clone();
+
+                // 2. Attach to target and set local transform
+                target.attach(arrow.mesh);
+
+                // This maintains the arrow's visual position and orientation relative to the target
+                arrow.mesh.position.copy(worldPos);
+                arrow.mesh.quaternion.copy(worldQuat);
+
+                // 3. Remove physics body
+                world.removeRigidBody(arrow.body);
+                arrow.body = null;
+            }
+
+        } else if (otherCollider?.userData?.type === 'floor') {
+            arrow.hasScored = true;
+            arrow.score = 'M'; // Miss
+            console.log('Arrow hit floor. Miss.');
+             // Make arrow stick to floor
+            if (arrow.body) {
+                arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
+            }
         }
-
-        world.removeRigidBody(arrow.body);
-        arrow.body = null;
     });
+
+    // Sync target visual mesh with its physics body
+    if (target && target.userData.ringBodies.length > 0) {
+        target.position.copy(target.userData.ringBodies[0].translation());
+        target.quaternion.copy(target.userData.ringBodies[0].rotation());
+    }
+
+    // State machine for game flow
+    if (gameState === GameState.INSPECTING) {
+        if (target && !target.userData.inScoringPosition) {
+            target.userData.inScoringPosition = true;
+            target.userData.ringBodies.forEach(body => {
+                body.setNextKinematicTranslation(target.userData.scoringPosition, true);
+            });
+        }
+    }
 
     if (renderer.xr.isPresenting) {
         for (let i = 0; i < 2; i++) {
             const controller = renderer.xr.getController(i);
             if (controller && controller.gamepad) {
+                // Grip button for holding the bow
                 if (controller.gamepad.buttons[1].pressed) {
                     if (!bowController) bowController = controller;
                 } else {
                     if (bowController === controller) bowController = null;
                 }
+
+                // 'A' button (or equivalent) for scoring
+                if (gameState === GameState.INSPECTING && controller.gamepad.buttons[4] && controller.gamepad.buttons[4].pressed) {
+                    if (!aButtonPressed[i]) {
+                        aButtonPressed[i] = true;
+                        gameState = GameState.ROUND_OVER;
+                        console.log("Entering ROUND_OVER state, processing scores.");
+                    }
+                } else {
+                    aButtonPressed[i] = false;
+                }
             }
         }
+    }
+
+    // Process the round end and immediately transition back to shooting
+    if (gameState === GameState.ROUND_OVER) {
+        processEnd();
+        gameState = GameState.SHOOTING;
+        console.log("Returning to SHOOTING state.");
     }
 
     if (bowController && bow) {
@@ -436,6 +496,46 @@ function animate(timestamp, frame) {
     }
 
     renderer.render(scene, camera);
+}
+
+function processEnd() {
+    const roundSize = 3;
+    if (firedArrows.length < roundSize) {
+        return;
+    }
+
+    const arrowsToScore = firedArrows.slice(-roundSize);
+
+    const scores = arrowsToScore.map(arrow => arrow.score || 'M');
+    const scoreValueForSort = (s) => {
+        if (s === 'X') return 11;
+        if (s === 'M') return 0;
+        return parseInt(s, 10);
+    };
+    scores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
+
+    scoreboard.updateScores(scores);
+
+    arrowsToScore.forEach(obj => {
+        if (obj.mesh) obj.mesh.removeFromParent();
+        if (obj.body) {
+            try { world.removeRigidBody(obj.body); } catch (e) {}
+        }
+    });
+
+    firedArrows.splice(-roundSize);
+
+    if (target) {
+        target.userData.inScoringPosition = false;
+        target.userData.ringBodies.forEach(body => {
+            body.setNextKinematicTranslation(target.userData.originalPosition, true);
+        });
+    }
+
+    if (scoreboard.scores.length >= 6) {
+        console.log("Full game finished. Ready for a new one.");
+        scoreboard.reset();
+    }
 }
 
 init();
