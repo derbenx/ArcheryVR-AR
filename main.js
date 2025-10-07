@@ -100,34 +100,18 @@ function onSelectStart(event) {
         if (!arrowObject) {
             if (!arrowTemplate) return;
 
-            // Create a pivot for the arrow to handle rotation easily
-            const arrowPivot = new THREE.Object3D();
-            scene.add(arrowPivot);
-
             const newArrowMesh = arrowTemplate.clone();
             newArrowMesh.visible = true;
-
-            const { correctionQuaternion, nockPosition } = arrowTemplate.userData;
-
-            // Apply the correction quaternion to align the arrow's tip with the pivot's +Z axis.
-            newArrowMesh.quaternion.copy(correctionQuaternion);
-
-            // Translate the arrow mesh so its nock is at the pivot's origin.
-            // We need to move the mesh by the inverse of the nock's position, after that position
-            // has been rotated by the correction quaternion.
-            const rotatedNockPosition = nockPosition.clone().applyQuaternion(correctionQuaternion);
-            newArrowMesh.position.sub(rotatedNockPosition);
-
-            arrowPivot.add(newArrowMesh);
+            scene.add(newArrowMesh);
 
             const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
             const body = world.createRigidBody(arrowBodyDesc);
-            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length)
+            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length / 2) // Rapier cuboids are half-extents
                 .setMass(0.1)
                 .setCollisionGroups(ARROW_GROUP_FILTER);
             world.createCollider(colliderDesc, body);
 
-            arrowObject = { pivot: arrowPivot, mesh: newArrowMesh, body: body };
+            arrowObject = { mesh: newArrowMesh, body: body };
         }
         arrowController = controller;
     }
@@ -196,36 +180,27 @@ async function placeScene(floorY) {
         const arrowSize = new THREE.Vector3();
         arrowBox.getSize(arrowSize);
 
-        // Find the longest dimension of the arrow
         const maxDim = Math.max(arrowSize.x, arrowSize.y, arrowSize.z);
         arrowTemplate.userData.length = maxDim;
 
-        // Determine the arrow's natural "tip" direction based on the longest axis
-        let tipDirection = new THREE.Vector3(0, 0, -1); // Default assumption
-        if (arrowSize.x === maxDim) {
-            tipDirection.set(-1, 0, 0);
-        } else if (arrowSize.y === maxDim) {
-            tipDirection.set(0, -1, 0);
-        }
-        arrowTemplate.userData.tipDirection = tipDirection;
-
-        // Calculate a correction quaternion to align the arrow's tip with the standard +Z axis
-        const standardForward = new THREE.Vector3(0, 0, 1);
-        const correctionQuaternion = new THREE.Quaternion().setFromUnitVectors(tipDirection, standardForward);
-        arrowTemplate.userData.correctionQuaternion = correctionQuaternion;
-
-        // Calculate the position of the nock (tail) in the arrow's local coordinate space.
-        const nockPosition = new THREE.Vector3();
+        const localForward = new THREE.Vector3();
+        const localNock = new THREE.Vector3();
         const center = arrowBox.getCenter(new THREE.Vector3());
 
+        // Determine the longest axis and assume the tip is at the positive end and nock at the negative end.
         if (arrowSize.x === maxDim) {
-            nockPosition.set(arrowBox.max.x, center.y, center.z);
+            localForward.set(1, 0, 0);
+            localNock.set(arrowBox.min.x, center.y, center.z);
         } else if (arrowSize.y === maxDim) {
-            nockPosition.set(center.x, arrowBox.max.y, center.z);
-        } else { // Z is maxDim
-            nockPosition.set(center.x, center.y, arrowBox.max.z);
+            localForward.set(0, 1, 0);
+            localNock.set(center.x, arrowBox.min.y, center.z);
+        } else {
+            localForward.set(0, 0, 1);
+            localNock.set(center.x, center.y, arrowBox.min.z);
         }
-        arrowTemplate.userData.nockPosition = nockPosition;
+
+        arrowTemplate.userData.forward = localForward;
+        arrowTemplate.userData.nock = localNock;
 
         arrowTemplate.visible = false;
     }
@@ -234,30 +209,22 @@ async function placeScene(floorY) {
 function shootArrow() {
     if (!bowController || !arrowController || !arrowObject || !arrowObject.body) return;
 
-    const { pivot, body } = arrowObject;
+    const { mesh, body } = arrowObject;
 
-    // The pivot's world transform is what the physics body should match.
-    // The animate loop keeps the kinematic body in sync, but we set it again
-    // here to ensure perfect alignment at the moment of firing.
-    body.setTranslation(pivot.position, true);
-    body.setRotation(pivot.quaternion, true);
-
-    // Now make the body dynamic.
+    body.setTranslation(mesh.position, true);
+    body.setRotation(mesh.quaternion, true);
     body.setBodyType(RAPIER.RigidBodyType.Dynamic);
 
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
 
-    // The shooting direction is the forward vector of the pivot.
-    const direction = new THREE.Vector3(0, 0, 1).applyQuaternion(pivot.quaternion);
-
-    const { length: arrowLength } = arrowTemplate.userData;
-    const drawDistance = Math.min(bowHand.position.distanceTo(arrowHand.position), arrowLength);
-    const drawRatio = drawDistance / arrowLength;
+    const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
+    const drawDistance = Math.min(arrowHand.position.distanceTo(bowHand.position), arrowTemplate.userData.length);
+    const drawRatio = drawDistance / arrowTemplate.userData.length;
     const maxSpeed = 30;
     const speed = drawRatio * maxSpeed;
 
-    body.setLinvel(direction.multiplyScalar(speed), true);
+    body.setLinvel(worldDirection.multiplyScalar(speed), true);
 
     firedArrows.push(arrowObject);
     arrowObject = null;
@@ -270,11 +237,11 @@ function cleanupScene() {
     if (bowstring) scene.remove(bowstring);
 
     if (arrowObject) {
-        if (arrowObject.pivot) scene.remove(arrowObject.pivot);
+        if (arrowObject.mesh) scene.remove(arrowObject.mesh);
         if (arrowObject.body) world.removeRigidBody(arrowObject.body);
     }
     firedArrows.forEach(obj => {
-        if (obj.pivot) scene.remove(obj.pivot);
+        if (obj.mesh) scene.remove(obj.mesh);
         if (obj.body) world.removeRigidBody(obj.body);
     });
 
@@ -323,28 +290,44 @@ function animate(timestamp, frame) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
-        const pivot = arrowObject.pivot;
+        const mesh = arrowObject.mesh;
+        const { forward: localForward, nock: localNock, length: arrowLength } = arrowTemplate.userData;
 
-        // The arrow mesh is now a child of the pivot, and its nock has been aligned
-        // to the pivot's origin. So, we just need to place the pivot at the hand's
-        // position and point it at the other hand.
+        // 1. Calculate the direction from the drawing hand to the bow hand.
+        const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position);
+        const drawDistance = worldDirection.length();
+        worldDirection.normalize();
 
-        // Position the pivot (and thus the arrow's nock) at the drawing hand.
-        pivot.position.copy(arrowHand.position);
+        // 2. Create the rotation to align the arrow model with this world direction.
+        const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
+        mesh.quaternion.copy(rotation);
 
-        // Orient the pivot to point towards the bow hand.
-        pivot.lookAt(bowHand.position);
+        // 3. Calculate the offset from the model's origin to its nock, in world space.
+        const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
 
-        // Update the physics body to match the pivot's final transform.
-        arrowBody.setNextKinematicTranslation(pivot.position);
-        arrowBody.setNextKinematicRotation(pivot.quaternion);
+        // 4. Calculate the clamped position for the nock.
+        const clampedDrawDistance = Math.min(drawDistance, arrowLength);
+        const clampedNockPosition = new THREE.Vector3().copy(bowHand.position).sub(worldDirection.clone().multiplyScalar(clampedDrawDistance));
+
+        // 5. Set the arrow's final position.
+        mesh.position.copy(clampedNockPosition).sub(rotatedNockOffset);
+
+        // 6. Update the physics body.
+        arrowBody.setNextKinematicTranslation(mesh.position);
+        arrowBody.setNextKinematicRotation(mesh.quaternion);
+
+        // Store the clamped nock position for the bowstring visual.
+        arrowObject.nockPosition = clampedNockPosition;
+
+    } else if (arrowObject) {
+        arrowObject.nockPosition = null;
     }
 
 
     firedArrows.forEach(obj => {
         if (obj.body) {
-            obj.pivot.position.copy(obj.body.translation());
-            obj.pivot.quaternion.copy(obj.body.rotation());
+            obj.mesh.position.copy(obj.body.translation());
+            obj.mesh.quaternion.copy(obj.body.rotation());
         }
     });
 
@@ -355,10 +338,10 @@ function animate(timestamp, frame) {
         const topPointWorld = topPointLocal.clone().applyMatrix4(bow.matrixWorld);
         const bottomPointWorld = bottomPointLocal.clone().applyMatrix4(bow.matrixWorld);
 
-        if (arrowController) {
-            const controllerPosition = renderer.xr.getController(arrowController.userData.id).position;
+        if (arrowController && arrowObject && arrowObject.nockPosition) {
+            const nockPosition = arrowObject.nockPosition;
             positions[0] = topPointWorld.x; positions[1] = topPointWorld.y; positions[2] = topPointWorld.z;
-            positions[3] = controllerPosition.x; positions[4] = controllerPosition.y; positions[5] = controllerPosition.z;
+            positions[3] = nockPosition.x; positions[4] = nockPosition.y; positions[5] = nockPosition.z;
             positions[6] = bottomPointWorld.x; positions[7] = bottomPointWorld.y; positions[8] = bottomPointWorld.z;
         } else {
             positions[0] = topPointWorld.x; positions[1] = topPointWorld.y; positions[2] = topPointWorld.z;
