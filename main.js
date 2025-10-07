@@ -187,16 +187,16 @@ async function placeScene(floorY) {
         const localNock = new THREE.Vector3();
         const center = arrowBox.getCenter(new THREE.Vector3());
 
-        // Determine the longest axis and assume the tip is at the positive end and nock at the negative end.
+        // Determine the longest axis and assume the tip is at the negative end and nock at the positive end.
         if (arrowSize.x === maxDim) {
-            localForward.set(1, 0, 0);
-            localNock.set(arrowBox.min.x, center.y, center.z);
+            localForward.set(-1, 0, 0);
+            localNock.set(arrowBox.max.x, center.y, center.z);
         } else if (arrowSize.y === maxDim) {
-            localForward.set(0, 1, 0);
-            localNock.set(center.x, arrowBox.min.y, center.z);
+            localForward.set(0, -1, 0);
+            localNock.set(center.x, arrowBox.max.y, center.z);
         } else {
-            localForward.set(0, 0, 1);
-            localNock.set(center.x, center.y, arrowBox.min.z);
+            localForward.set(0, 0, -1);
+            localNock.set(center.x, center.y, arrowBox.max.z);
         }
 
         arrowTemplate.userData.forward = localForward;
