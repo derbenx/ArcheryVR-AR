@@ -233,19 +233,21 @@ async function placeScene(floorY) {
         arrowTemplate.userData.length = maxLength;
 
         // Define forward and nock vectors based on the longest axis.
-        // The nock is the back-end of the arrow.
+        // The nock is the back-end of the arrow. The original code assumed the
+        // arrow's tip was in the positive direction of the longest axis.
+        // The user reported the arrow is backward, so we reverse this assumption.
         switch (longestAxis) {
             case 'x':
-                arrowTemplate.userData.forward = new THREE.Vector3(1, 0, 0);
-                arrowTemplate.userData.nock = new THREE.Vector3(arrowBox.min.x, 0, 0);
+                arrowTemplate.userData.forward = new THREE.Vector3(-1, 0, 0); // Point along -X
+                arrowTemplate.userData.nock = new THREE.Vector3(arrowBox.max.x, 0, 0); // Nock is at the max X
                 break;
             case 'y':
-                arrowTemplate.userData.forward = new THREE.Vector3(0, 1, 0);
-                arrowTemplate.userData.nock = new THREE.Vector3(0, arrowBox.min.y, 0);
+                arrowTemplate.userData.forward = new THREE.Vector3(0, -1, 0); // Point along -Y
+                arrowTemplate.userData.nock = new THREE.Vector3(0, arrowBox.max.y, 0); // Nock is at the max Y
                 break;
             default: // 'z'
-                arrowTemplate.userData.forward = new THREE.Vector3(0, 0, 1);
-                arrowTemplate.userData.nock = new THREE.Vector3(0, 0, arrowBox.min.z);
+                arrowTemplate.userData.forward = new THREE.Vector3(0, 0, -1); // Point along -Z
+                arrowTemplate.userData.nock = new THREE.Vector3(0, 0, arrowBox.max.z); // Nock is at the max Z
                 break;
         }
 
@@ -266,6 +268,8 @@ function shootArrow() {
 
     // 3. Calculate power based on draw distance
     const drawDistance = bowHand.position.distanceTo(arrowHand.position);
+    // Use the arrow's length (stored in userData) as the max draw distance.
+    // Provide a fallback of 1.0 in case the length isn't defined.
     const maxDraw = arrowObject.mesh.userData.length || 1.0;
     const power = Math.min(drawDistance, maxDraw) * 60; // Capped power
 
