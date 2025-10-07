@@ -107,8 +107,16 @@ function onSelectStart(event) {
             const newArrowMesh = arrowTemplate.clone();
             newArrowMesh.visible = true;
 
-            // Apply the correction to align the arrow model's tip with the pivot's +Z axis
-            newArrowMesh.quaternion.copy(arrowTemplate.userData.correctionQuaternion);
+            const { correctionQuaternion, nockPosition } = arrowTemplate.userData;
+
+            // Apply the correction quaternion to align the arrow's tip with the pivot's +Z axis.
+            newArrowMesh.quaternion.copy(correctionQuaternion);
+
+            // Translate the arrow mesh so its nock is at the pivot's origin.
+            // We need to move the mesh by the inverse of the nock's position, after that position
+            // has been rotated by the correction quaternion.
+            const rotatedNockPosition = nockPosition.clone().applyQuaternion(correctionQuaternion);
+            newArrowMesh.position.sub(rotatedNockPosition);
 
             arrowPivot.add(newArrowMesh);
 
@@ -119,7 +127,7 @@ function onSelectStart(event) {
                 .setCollisionGroups(ARROW_GROUP_FILTER);
             world.createCollider(colliderDesc, body);
 
-            arrowObject = { mesh: arrowPivot, body: body };
+            arrowObject = { pivot: arrowPivot, mesh: newArrowMesh, body: body };
         }
         arrowController = controller;
     }
@@ -203,7 +211,21 @@ async function placeScene(floorY) {
 
         // Calculate a correction quaternion to align the arrow's tip with the standard +Z axis
         const standardForward = new THREE.Vector3(0, 0, 1);
-        arrowTemplate.userData.correctionQuaternion = new THREE.Quaternion().setFromUnitVectors(tipDirection, standardForward);
+        const correctionQuaternion = new THREE.Quaternion().setFromUnitVectors(tipDirection, standardForward);
+        arrowTemplate.userData.correctionQuaternion = correctionQuaternion;
+
+        // Calculate the position of the nock (tail) in the arrow's local coordinate space.
+        const nockPosition = new THREE.Vector3();
+        const center = arrowBox.getCenter(new THREE.Vector3());
+
+        if (arrowSize.x === maxDim) {
+            nockPosition.set(arrowBox.max.x, center.y, center.z);
+        } else if (arrowSize.y === maxDim) {
+            nockPosition.set(center.x, arrowBox.max.y, center.z);
+        } else { // Z is maxDim
+            nockPosition.set(center.x, center.y, arrowBox.max.z);
+        }
+        arrowTemplate.userData.nockPosition = nockPosition;
 
         arrowTemplate.visible = false;
     }
@@ -212,13 +234,22 @@ async function placeScene(floorY) {
 function shootArrow() {
     if (!bowController || !arrowController || !arrowObject || !arrowObject.body) return;
 
-    arrowObject.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
+    const { pivot, body } = arrowObject;
+
+    // The pivot's world transform is what the physics body should match.
+    // The animate loop keeps the kinematic body in sync, but we set it again
+    // here to ensure perfect alignment at the moment of firing.
+    body.setTranslation(pivot.position, true);
+    body.setRotation(pivot.quaternion, true);
+
+    // Now make the body dynamic.
+    body.setBodyType(RAPIER.RigidBodyType.Dynamic);
 
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
 
-    // The shooting direction is from the arrow hand to the bow hand
-    const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
+    // The shooting direction is the forward vector of the pivot.
+    const direction = new THREE.Vector3(0, 0, 1).applyQuaternion(pivot.quaternion);
 
     const { length: arrowLength } = arrowTemplate.userData;
     const drawDistance = Math.min(bowHand.position.distanceTo(arrowHand.position), arrowLength);
@@ -226,7 +257,7 @@ function shootArrow() {
     const maxSpeed = 30;
     const speed = drawRatio * maxSpeed;
 
-    arrowObject.body.setLinvel(direction.multiplyScalar(speed), true);
+    body.setLinvel(direction.multiplyScalar(speed), true);
 
     firedArrows.push(arrowObject);
     arrowObject = null;
@@ -239,11 +270,11 @@ function cleanupScene() {
     if (bowstring) scene.remove(bowstring);
 
     if (arrowObject) {
-        if (arrowObject.mesh) scene.remove(arrowObject.mesh);
+        if (arrowObject.pivot) scene.remove(arrowObject.pivot);
         if (arrowObject.body) world.removeRigidBody(arrowObject.body);
     }
     firedArrows.forEach(obj => {
-        if (obj.mesh) scene.remove(obj.mesh);
+        if (obj.pivot) scene.remove(obj.pivot);
         if (obj.body) world.removeRigidBody(obj.body);
     });
 
@@ -292,23 +323,19 @@ function animate(timestamp, frame) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
-        const pivot = arrowObject.mesh; // The mesh is now the pivot object
-        const { length: arrowLength } = arrowTemplate.userData;
+        const pivot = arrowObject.pivot;
 
-        // The arrow should point from the drawing hand to the bow hand.
-        const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
+        // The arrow mesh is now a child of the pivot, and its nock has been aligned
+        // to the pivot's origin. So, we just need to place the pivot at the hand's
+        // position and point it at the other hand.
 
-        // Position the pivot (which represents the arrow's center) so that the arrow's
-        // nock is at the drawing hand's position.
-        pivot.position.copy(arrowHand.position).addScaledVector(direction, arrowLength / 2);
+        // Position the pivot (and thus the arrow's nock) at the drawing hand.
+        pivot.position.copy(arrowHand.position);
 
         // Orient the pivot to point towards the bow hand.
-        // The inner arrow mesh has been pre-rotated via a correction quaternion
-        // so that its tip aligns with the pivot's +Z axis.
-        // Therefore, making the pivot look at the bow hand orients the arrow correctly.
         pivot.lookAt(bowHand.position);
 
-        // Update the physics body to match the pivot's transform.
+        // Update the physics body to match the pivot's final transform.
         arrowBody.setNextKinematicTranslation(pivot.position);
         arrowBody.setNextKinematicRotation(pivot.quaternion);
     }
@@ -316,8 +343,8 @@ function animate(timestamp, frame) {
 
     firedArrows.forEach(obj => {
         if (obj.body) {
-            obj.mesh.position.copy(obj.body.translation());
-            obj.mesh.quaternion.copy(obj.body.rotation());
+            obj.pivot.position.copy(obj.body.translation());
+            obj.pivot.quaternion.copy(obj.body.rotation());
         }
     });
 
