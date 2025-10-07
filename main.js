@@ -100,18 +100,26 @@ function onSelectStart(event) {
         if (!arrowObject) {
             if (!arrowTemplate) return;
 
+            // Create a pivot for the arrow to handle rotation easily
+            const arrowPivot = new THREE.Object3D();
+            scene.add(arrowPivot);
+
             const newArrowMesh = arrowTemplate.clone();
             newArrowMesh.visible = true;
-            scene.add(newArrowMesh);
+
+            // Apply the correction to align the arrow model's tip with the pivot's +Z axis
+            newArrowMesh.quaternion.copy(arrowTemplate.userData.correctionQuaternion);
+
+            arrowPivot.add(newArrowMesh);
 
             const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
             const body = world.createRigidBody(arrowBodyDesc);
-            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, 0.4)
+            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length)
                 .setMass(0.1)
                 .setCollisionGroups(ARROW_GROUP_FILTER);
             world.createCollider(colliderDesc, body);
 
-            arrowObject = { mesh: newArrowMesh, body: body };
+            arrowObject = { mesh: arrowPivot, body: body };
         }
         arrowController = controller;
     }
@@ -177,7 +185,26 @@ async function placeScene(floorY) {
         arrowTemplate = arrowMesh;
         arrowTemplate.geometry.computeBoundingBox();
         const arrowBox = arrowTemplate.geometry.boundingBox;
-        arrowTemplate.userData.length = arrowBox.max.z - arrowBox.min.z;
+        const arrowSize = new THREE.Vector3();
+        arrowBox.getSize(arrowSize);
+
+        // Find the longest dimension of the arrow
+        const maxDim = Math.max(arrowSize.x, arrowSize.y, arrowSize.z);
+        arrowTemplate.userData.length = maxDim;
+
+        // Determine the arrow's natural "tip" direction based on the longest axis
+        let tipDirection = new THREE.Vector3(0, 0, -1); // Default assumption
+        if (arrowSize.x === maxDim) {
+            tipDirection.set(-1, 0, 0);
+        } else if (arrowSize.y === maxDim) {
+            tipDirection.set(0, -1, 0);
+        }
+        arrowTemplate.userData.tipDirection = tipDirection;
+
+        // Calculate a correction quaternion to align the arrow's tip with the standard +Z axis
+        const standardForward = new THREE.Vector3(0, 0, 1);
+        arrowTemplate.userData.correctionQuaternion = new THREE.Quaternion().setFromUnitVectors(tipDirection, standardForward);
+
         arrowTemplate.visible = false;
     }
 }
@@ -265,25 +292,25 @@ function animate(timestamp, frame) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
-        const mesh = arrowObject.mesh;
+        const pivot = arrowObject.mesh; // The mesh is now the pivot object
         const { length: arrowLength } = arrowTemplate.userData;
 
         // The arrow should point from the drawing hand to the bow hand.
         const direction = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
 
-        // Position the arrow so its nock is at the drawing hand's position.
-        mesh.position.copy(arrowHand.position).addScaledVector(direction, arrowLength / 2);
+        // Position the pivot (which represents the arrow's center) so that the arrow's
+        // nock is at the drawing hand's position.
+        pivot.position.copy(arrowHand.position).addScaledVector(direction, arrowLength / 2);
 
-        // Orient the arrow to point at the bow hand, keeping it horizontal.
-        // The lookAt() method makes the object's +Z axis point towards the target.
-        // Since our arrow model's tip is along its -Z axis, we need to make it
-        // look at a point in the opposite direction from the bow hand.
-        const lookAtTarget = new THREE.Vector3().copy(mesh.position).sub(direction);
-        mesh.lookAt(lookAtTarget);
+        // Orient the pivot to point towards the bow hand.
+        // The inner arrow mesh has been pre-rotated via a correction quaternion
+        // so that its tip aligns with the pivot's +Z axis.
+        // Therefore, making the pivot look at the bow hand orients the arrow correctly.
+        pivot.lookAt(bowHand.position);
 
-        // Update the physics body to match.
-        arrowBody.setNextKinematicTranslation(mesh.position);
-        arrowBody.setNextKinematicRotation(mesh.quaternion);
+        // Update the physics body to match the pivot's transform.
+        arrowBody.setNextKinematicTranslation(pivot.position);
+        arrowBody.setNextKinematicRotation(pivot.quaternion);
     }
 
 
