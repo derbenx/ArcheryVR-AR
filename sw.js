@@ -1,3 +1,4 @@
+// Cache-busting comment to force service worker update: 2025-10-08 08:54
 const swEnabled = 0;
 
 if (!swEnabled) {

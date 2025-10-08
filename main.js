@@ -274,7 +274,9 @@ async function placeScene(floorY) {
         const bowBox = bow.geometry.boundingBox;
         const bowSize = new THREE.Vector3();
         bowBox.getSize(bowSize);
-        const bowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
+        const bowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
+            .setLinearDamping(0.5)
+            .setAngularDamping(0.5);
         const bowBody = world.createRigidBody(bowBodyDesc);
         const bowColliderDesc = RAPIER.ColliderDesc.cuboid(bowSize.x / 2, bowSize.y / 2, bowSize.z / 2).setMass(0.5);
         world.createCollider(bowColliderDesc, bowBody);
@@ -587,13 +589,21 @@ function cleanupRound() {
 
 function moveTargetToDistance(distance) {
     if (!target || !target.userData.originalPosition) return;
+
     const newStartPosition = new THREE.Vector3(0, target.userData.originalPosition.y, -distance);
+
+    // Update the stored positions for game logic
     target.userData.originalPosition.copy(newStartPosition);
+    // Ensure the scoring position is relative to the new start position's height, but at a fixed close distance
     target.userData.scoringPosition.set(0, newStartPosition.y, -3);
+
+    // Immediately move both the visual mesh and the physics body
     target.position.copy(newStartPosition);
     target.userData.ringBodies.forEach(body => {
-        body.setNextKinematicTranslation(newStartPosition, true);
+        body.setTranslation(newStartPosition, true);
     });
+
+    // Reset the inspection flag as we are moving to a new shooting position
     target.userData.inScoringPosition = false;
 }
 
