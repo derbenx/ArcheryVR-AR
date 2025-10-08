@@ -181,11 +181,19 @@ let eventQueue;
 let colliderToScoreMap;
 let colliderToRawNameMap; // For debug display
 
+// --- Debug ---
+let debugDisplay;
+let last3HitsRaw = [];
+let debugMode = false;
+let debugMaterial;
+const originalMaterials = new Map();
+
 // --- Controller and State ---
 let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
 let aButtonPressed = [false, false]; // To track 'A' button state for each controller
+let bButtonPressed = [false, false]; // To track 'B' button state
 let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
 
 async function init() {
@@ -210,6 +218,7 @@ async function init() {
     world = new RAPIER.World(gravity);
     eventQueue = new RAPIER.EventQueue(true);
     colliderToScoreMap = new Map();
+    colliderToRawNameMap = new Map();
 
     const arButton = ARButton.createButton(renderer, { requiredFeatures: ['local-floor', 'plane-detection'] });
     document.body.appendChild(arButton);
@@ -224,6 +233,16 @@ async function init() {
     // Position it in a fixed location in the world.
     scoreboardMesh.position.set(0, 1.6, -2.5);
     scene.add(scoreboardMesh);
+
+    createDebugDisplay();
+
+    // Create debug material
+    debugMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ff00,
+        opacity: 0.5,
+        transparent: true,
+        wireframe: true
+    });
 
     startNewGame();
 
@@ -315,7 +334,7 @@ async function placeScene(floorY) {
             target.add(child.clone());
         }
     });
-    target.position.set(0, floorY + 1.2, -10);
+    target.position.set(0, floorY + 1.2, -5); // Moved closer for debugging
     target.rotation.y = Math.PI;
     scene.add(target);
 
@@ -325,6 +344,9 @@ async function placeScene(floorY) {
     target.userData.ringBodies = [];
 
     target.children.forEach(ring => {
+        // Store original material for debug mode
+        originalMaterials.set(ring.uuid, ring.material);
+
         const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
             target.position.x, target.position.y, target.position.z
         ).setRotation(target.quaternion);
@@ -341,6 +363,7 @@ async function placeScene(floorY) {
 
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
+        colliderToRawNameMap.set(collider.handle, ring.name); // Store raw name for debug
 
         collider.userData = { type: 'target' };
     });
@@ -494,8 +517,14 @@ function animate(timestamp, frame) {
         if (otherCollider?.userData?.type === 'target') {
             arrow.hasScored = true;
             const scoreValue = colliderToScoreMap.get(otherCollider.handle);
+            const rawName = colliderToRawNameMap.get(otherCollider.handle);
             arrow.score = scoreValue;
-            console.log(`Arrow hit target for score: ${arrow.score}`);
+            console.log(`Arrow hit target for score: ${arrow.score} (Raw Ring: ${rawName})`);
+
+            // Update debug display
+            last3HitsRaw.push(rawName);
+            if (last3HitsRaw.length > 3) last3HitsRaw.shift();
+            updateDebugDisplay();
 
             // To make arrow "stick," remove its physics body and parent it to the target.
             // The `attach` method correctly handles preserving the world transform.
@@ -585,6 +614,16 @@ function animate(timestamp, frame) {
                     }
                 } else {
                     aButtonPressed[i] = false;
+                }
+
+                // --- 'B' button for toggling debug visuals ---
+                if (controller.gamepad.buttons[5] && controller.gamepad.buttons[5].pressed) {
+                    if (!bButtonPressed[i]) {
+                        bButtonPressed[i] = true;
+                        toggleDebugMode();
+                    }
+                } else {
+                    bButtonPressed[i] = false;
                 }
 
                 // --- History Navigation with Joystick ---
@@ -748,8 +787,6 @@ function cleanupRound() {
     // Reset target position
     if (target) {
         target.userData.inScoringPosition = false;
-        // Move the visual group first, then sync physics bodies to it.
-        target.position.copy(target.userData.originalPosition);
         target.userData.ringBodies.forEach(body => {
             body.setNextKinematicTranslation(target.position, true);
             body.setNextKinematicRotation(target.quaternion, true);
@@ -767,6 +804,53 @@ function cleanupRound() {
 
 // --- Game Logic ---
 
+function toggleDebugMode() {
+    if (!target) return;
+    debugMode = !debugMode;
+    console.log(`Debug mode toggled: ${debugMode}`);
+
+    target.children.forEach(ring => {
+        if (debugMode) {
+            ring.material = debugMaterial;
+        } else {
+            ring.material = originalMaterials.get(ring.uuid);
+        }
+    });
+}
+
+function createDebugDisplay() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 128;
+    const context = canvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.encoding = THREE.sRGBEncoding;
+
+    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+    const geometry = new THREE.PlaneGeometry(1, 0.25);
+    debugDisplay = { canvas, context, texture, mesh: new THREE.Mesh(geometry, material) };
+
+    // Position it below the main scoreboard and attach to camera
+    debugDisplay.mesh.position.set(0, 1.2, -2.5);
+    scene.add(debugDisplay.mesh); // Add to scene for fixed position
+    updateDebugDisplay(); // Initial draw
+}
+
+function updateDebugDisplay() {
+    if (!debugDisplay) return;
+    const { context, canvas, texture } = debugDisplay;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = 'lime';
+    context.font = 'bold 32px monospace';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    const text = `Raw Hits: [${last3HitsRaw.join(', ')}]`;
+    context.fillText(text, canvas.width / 2, canvas.height / 2);
+    texture.needsUpdate = true;
+}
+
 function startNewGame() {
     currentGame = {
         gameNumber: gameHistory.length + 1,
@@ -780,6 +864,8 @@ function startNewGame() {
     };
     firedArrows = [];
     currentRoundArrows = [];
+    last3HitsRaw = []; // Reset debug display on new game
+    if (debugDisplay) updateDebugDisplay();
     viewingGameIndex = -1; // View the new current game
     scoreboard.displayGame(currentGame);
     console.log(`Starting Game #${currentGame.gameNumber}`);
