@@ -474,6 +474,8 @@ function animate(timestamp, frame) {
 
     if (world) world.step(eventQueue);
 
+    const collisionsThisFrame = new Map();
+
     eventQueue.drainCollisionEvents((handle1, handle2, started) => {
         if (!started) return;
 
@@ -493,28 +495,61 @@ function animate(timestamp, frame) {
 
         if (arrow.hasScored) return;
 
-        if (otherCollider?.userData?.type === 'target') {
-            arrow.hasScored = true;
-            const scoreValue = colliderToScoreMap.get(otherCollider.handle);
-            arrow.score = scoreValue;
-            const ringName = otherCollider.userData.ringName || 'unknown';
-            logHit(ringName, scoreValue);
-            console.log(`Arrow hit target ring ${ringName} for score: ${arrow.score}`);
+        // Collect all collisions for each arrow this frame
+        if (!collisionsThisFrame.has(arrow)) {
+            collisionsThisFrame.set(arrow, []);
+        }
+        collisionsThisFrame.get(arrow).push(otherCollider);
+    });
 
-            // To make arrow "stick," remove its physics body and parent it to the target.
-            // The `attach` method correctly handles preserving the world transform.
+    // Now, process the collected collisions to determine the highest score
+    collisionsThisFrame.forEach((colliders, arrow) => {
+        if (arrow.hasScored) return; // Should not happen, but a safeguard
+
+        let highestScore = 'M';
+        let highestScoreValue = 0;
+        let hitObjectNames = [];
+        let hitTarget = false;
+
+        const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
+
+        colliders.forEach(otherCollider => {
+            if (otherCollider?.userData?.type === 'target') {
+                hitTarget = true;
+                const ringName = otherCollider.userData.ringName || 'unknown';
+                hitObjectNames.push(ringName);
+
+                const currentScore = colliderToScoreMap.get(otherCollider.handle);
+                const currentScoreValue = scoreValueForSort(currentScore);
+
+                if (currentScoreValue > highestScoreValue) {
+                    highestScoreValue = currentScoreValue;
+                    highestScore = currentScore;
+                }
+            } else if (otherCollider?.userData?.type === 'floor') {
+                hitObjectNames.push('floor');
+                // 'M' is the lowest score, so it will only be the result if nothing else is hit.
+            }
+        });
+
+        // Log all contacts and the final determined score
+        logHit(hitObjectNames.join(', '), highestScore);
+        console.log(`Arrow hit [${hitObjectNames.join(', ')}], final score: ${highestScore}`);
+
+
+        // Assign the highest score and make the arrow stick
+        arrow.score = highestScore;
+        arrow.hasScored = true;
+
+        if (hitTarget) {
+            // Stick to the target
             if (arrow.body) {
                 target.attach(arrow.mesh);
                 world.removeRigidBody(arrow.body);
                 arrow.body = null;
             }
-
-        } else if (otherCollider?.userData?.type === 'floor') {
-            arrow.hasScored = true;
-            arrow.score = 'M'; // Miss
-            logHit('floor', 'M');
-            console.log('Arrow hit floor. Miss.');
-             // Make arrow stick to floor
+        } else {
+            // Stick to the floor
             if (arrow.body) {
                 arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
             }
