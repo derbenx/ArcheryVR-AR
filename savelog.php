@@ -4,30 +4,32 @@ date_default_timezone_set('UTC');
 
 // Check if data was sent via POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Get the raw POST data
-    $data = file_get_contents('php://input');
+    // Check if the expected 'hit' and 'score' fields are present in the POST data
+    if (isset($_POST['hit']) && isset($_POST['score'])) {
+        $hitObject = $_POST['hit'];
+        $assignedScore = $_POST['score'];
 
-    // Decode the JSON data
-    $json_data = json_decode($data, true);
+        // Prepare the log message from the form data
+        $log_message = "Hit: " . $hitObject . ", Score: " . $assignedScore;
 
-    // Check if JSON decoding was successful and if 'log_data' exists
-    if (json_last_error() === JSON_ERROR_NONE && isset($json_data['log_data'])) {
-        $log_message = $json_data['log_data'];
-
-        // Prepare the log entry with a timestamp
+        // Prepare the final log entry with a timestamp
         $log_entry = date('[Y-m-d H:i:s] ') . $log_message . PHP_EOL;
 
         // Append the log entry to the file
         // FILE_APPEND flag ensures data is added to the end of the file
         // LOCK_EX flag prevents other scripts from writing to the file at the same time
-        file_put_contents('log.txt', $log_entry, FILE_APPEND | LOCK_EX);
-
-        // Respond with a success message
-        echo 'Log saved successfully.';
+        if (file_put_contents('log.txt', $log_entry, FILE_APPEND | LOCK_EX) !== false) {
+            // Respond with a success message
+            echo 'Log saved successfully.';
+        } else {
+            // Respond with a server error if the file cannot be written to
+            http_response_code(500); // Internal Server Error
+            echo 'Error writing to log file. Check permissions.';
+        }
     } else {
         // Respond with an error if the data is invalid
         http_response_code(400); // Bad Request
-        echo 'Invalid or missing log_data.';
+        echo 'Invalid or missing POST data. Expected "hit" and "score" fields.';
     }
 } else {
     // Respond with an error if the request method is not POST
