@@ -316,15 +316,11 @@ async function placeScene(floorY) {
         }
     });
 
-    // 2. Add the target to the scene WITHOUT applying any transformations.
-    // The positions are defined in the GLB file.
-    scene.add(target);
-
-    // 3. Create a single kinematic body for the target group, at the origin.
-    const targetBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased(); // Stays at origin
+    // 2. Create a single kinematic body for the target group, at the origin.
+    const targetBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
     const targetBody = world.createRigidBody(targetBodyDesc);
 
-    // 4. Create colliders with LOCAL offsets matching the visual meshes.
+    // 3. Create colliders with LOCAL offsets matching the visual meshes.
     target.children.forEach(ring => {
         const colliderDesc = RAPIER.ColliderDesc.trimesh(
             ring.geometry.attributes.position.array,
@@ -343,9 +339,17 @@ async function placeScene(floorY) {
         collider.userData = { type: 'target', ringName: ring.name };
     });
 
-    // 5. Store the physics body for reference, but remove movement-related state.
-    target.userData.ringBodies = [targetBody];
+    // 4. Add the visual group to the scene and move IT and the PHYSICS BODY to the start position.
+    scene.add(target);
+    const startPosition = new THREE.Vector3(0, floorY + 1.2, -10);
+    target.position.copy(startPosition);
+    targetBody.setTranslation(startPosition, true);
+
+    // 5. Store state for later movement.
+    target.userData.originalPosition = startPosition.clone();
+    target.userData.scoringPosition = new THREE.Vector3(0, startPosition.y, -3);
     target.userData.inScoringPosition = false;
+    target.userData.ringBodies = [targetBody];
 
     bow = gltf.scene.getObjectByName('bow');
     if (bow) {
@@ -583,16 +587,20 @@ function animate(timestamp, frame) {
     switch (gameState) {
         case GameState.PROCESSING_SCORE:
             processScores();
-            // Since the target no longer moves, we can go directly to resetting
-            // or waiting for the user to initiate the next round.
-            // For now, we'll just wait for the 'A' button press.
-            gameState = GameState.INSPECTING; // Keep state for button logic
-            console.log("Scores processed. Ready for next round.");
+            gameState = GameState.INSPECTING;
+            console.log("Transitioning to INSPECTING state.");
             break;
 
         case GameState.INSPECTING:
-            // Target no longer moves, so this state is now just a waiting period
-            // for the user to press the 'A' button to start the next round.
+            if (target && !target.userData.inScoringPosition) {
+                target.userData.inScoringPosition = true;
+                // Move the visual group first, then sync physics bodies to it.
+                target.position.copy(target.userData.scoringPosition);
+                target.userData.ringBodies.forEach(body => {
+                    body.setNextKinematicTranslation(target.position, true);
+                    body.setNextKinematicRotation(target.quaternion, true);
+                });
+            }
             break;
 
         case GameState.RESETTING:
@@ -804,7 +812,16 @@ function cleanupRound() {
     });
     currentRoundArrows = []; // Clear the temporary array
 
-    // The target's position is no longer reset. This block is now empty.
+    // Reset target position
+    if (target) {
+        target.userData.inScoringPosition = false;
+        // Move the visual group first, then sync physics bodies to it.
+        target.position.copy(target.userData.originalPosition);
+        target.userData.ringBodies.forEach(body => {
+            body.setNextKinematicTranslation(target.position, true);
+            body.setNextKinematicRotation(target.quaternion, true);
+        });
+    }
 
     // After 12 arrows are scored, finalize the game
     if (currentGame.scores.length >= 12) {
