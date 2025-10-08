@@ -285,7 +285,7 @@ function onSelectStart(event) {
     if (viewingGameIndex !== -1) {
         viewingGameIndex = -1;
         scoreboard.displayGame(currentGame);
-        console.log("Switched back to current game due to drawing arrow.");
+        logToServer("Switched back to current game due to drawing arrow.");
     }
 
     if (bowController && controller !== bowController) {
@@ -329,32 +329,63 @@ async function placeScene(floorY) {
     floorCollider.userData = { type: 'floor' };
 
     target = new THREE.Group();
+    scene.add(target); // Add the main group to the scene
+
+    // Define the center points for the original and scoring positions
+    const originalCenter = new THREE.Vector3(0, floorY + 2.5, -5);
+    const scoringCenter = new THREE.Vector3(0, floorY + 2.5, -3);
+
+    target.position.copy(originalCenter);
+    target.userData.originalPosition = originalCenter;
+    target.userData.scoringPosition = scoringCenter;
+    target.userData.inScoringPosition = false;
+    target.userData.ringBodies = []; // Still useful to have a list of all bodies
+
+    // Collect all ring meshes from the loaded model
+    const allRings = [];
     gltf.scene.traverse(child => {
         if (child.isMesh && !isNaN(parseInt(child.name))) {
-            target.add(child.clone());
+            allRings.push(child);
         }
     });
-    target.position.set(0, floorY + 1.2, -5); // Moved closer for debugging
-    target.rotation.y = Math.PI;
-    scene.add(target);
 
-    target.userData.originalPosition = target.position.clone();
-    target.userData.scoringPosition = new THREE.Vector3(0, target.position.y, -3);
-    target.userData.inScoringPosition = false;
-    target.userData.ringBodies = [];
+    // Sort rings by score value, descending (11, 10, 9...)
+    allRings.sort((a, b) => parseInt(b.name) - parseInt(a.name));
 
-    target.children.forEach(ring => {
+    // Lay them out in a tree formation
+    const ySpacing = 0.45;
+    const xSpacing = 0.5;
+    allRings.forEach((ring, i) => {
+        const ringClone = ring.clone();
+
+        // Position them locally within the target group
+        const yPos = -i * ySpacing;
+        // Arrange in a V-shape
+        const xPos = (i % 2 === 0 ? -1 : 1) * xSpacing * Math.floor((i + 1) / 2);
+        ringClone.position.set(xPos, yPos, 0);
+        target.add(ringClone); // Add to the group
+
         // Store original material for debug mode
-        originalMaterials.set(ring.uuid, ring.material);
+        originalMaterials.set(ringClone.uuid, ringClone.material);
 
-        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-            target.position.x, target.position.y, target.position.z
-        ).setRotation(target.quaternion);
+        // Get the world position for the physics body
+        const worldPos = new THREE.Vector3();
+        ringClone.getWorldPosition(worldPos);
+        const worldQuat = new THREE.Quaternion();
+        ringClone.getWorldQuaternion(worldQuat);
+
+        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
+            .setTranslation(worldPos.x, worldPos.y, worldPos.z)
+            .setRotation(worldQuat);
         const ringBody = world.createRigidBody(ringBodyDesc);
+
+        // Associate body with mesh for easier updates later
+        ringClone.userData.physicsBody = ringBody;
         target.userData.ringBodies.push(ringBody);
+
         const colliderDesc = RAPIER.ColliderDesc.trimesh(
-            ring.geometry.attributes.position.array,
-            ring.geometry.index.array
+            ringClone.geometry.attributes.position.array,
+            ringClone.geometry.index.array
         )
         .setCollisionGroups(TARGET_GROUP_FILTER)
         .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
@@ -363,7 +394,7 @@ async function placeScene(floorY) {
 
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
-        colliderToRawNameMap.set(collider.handle, ring.name); // Store raw name for debug
+        colliderToRawNameMap.set(collider.handle, ring.name);
 
         collider.userData = { type: 'target' };
     });
@@ -519,7 +550,7 @@ function animate(timestamp, frame) {
             const scoreValue = colliderToScoreMap.get(otherCollider.handle);
             const rawName = colliderToRawNameMap.get(otherCollider.handle);
             arrow.score = scoreValue;
-            console.log(`Arrow hit target for score: ${arrow.score} (Raw Ring: ${rawName})`);
+            logToServer(`Arrow hit target for score: ${arrow.score} (Raw Ring: ${rawName})`);
 
             // Update debug display
             last3HitsRaw.push(rawName);
@@ -537,7 +568,7 @@ function animate(timestamp, frame) {
         } else if (otherCollider?.userData?.type === 'floor') {
             arrow.hasScored = true;
             arrow.score = 'M'; // Miss
-            console.log('Arrow hit floor. Miss.');
+            logToServer('Arrow hit floor. Miss.');
              // Make arrow stick to floor
             if (arrow.body) {
                 arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
@@ -564,7 +595,7 @@ function animate(timestamp, frame) {
 
             if (allLanded) {
                 gameState = GameState.PROCESSING_SCORE;
-                console.log(`Round ${currentGame.scores.length / 3 + 1} complete, all arrows landed. Processing scores.`);
+                logToServer(`Round ${currentGame.scores.length / 3 + 1} complete, all arrows landed. Processing scores.`);
             }
         }
     }
@@ -573,17 +604,27 @@ function animate(timestamp, frame) {
         case GameState.PROCESSING_SCORE:
             processScores();
             gameState = GameState.INSPECTING;
-            console.log("Transitioning to INSPECTING state.");
+            logToServer("Transitioning to INSPECTING state.");
             break;
 
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
                 target.userData.inScoringPosition = true;
-                // Move the visual group first, then sync physics bodies to it.
+                // Move the parent group to the scoring position
                 target.position.copy(target.userData.scoringPosition);
-                target.userData.ringBodies.forEach(body => {
-                    body.setNextKinematicTranslation(target.position, true);
-                    body.setNextKinematicRotation(target.quaternion, true);
+
+                // Update each physics body to match its corresponding mesh's new world position
+                target.children.forEach(ringMesh => {
+                    if (ringMesh.userData.physicsBody) {
+                        const body = ringMesh.userData.physicsBody;
+                        const newWorldPos = new THREE.Vector3();
+                        ringMesh.getWorldPosition(newWorldPos);
+                        body.setNextKinematicTranslation(newWorldPos, true);
+
+                        const newWorldQuat = new THREE.Quaternion();
+                        ringMesh.getWorldQuaternion(newWorldQuat);
+                        body.setNextKinematicRotation(newWorldQuat, true);
+                    }
                 });
             }
             break;
@@ -610,7 +651,7 @@ function animate(timestamp, frame) {
                     if (!aButtonPressed[i]) {
                         aButtonPressed[i] = true;
                         gameState = GameState.RESETTING;
-                        console.log("Entering RESETTING state.");
+                        logToServer("Entering RESETTING state.");
                     }
                 } else {
                     aButtonPressed[i] = false;
@@ -650,10 +691,10 @@ function animate(timestamp, frame) {
                             // Update scoreboard to show the selected game
                             if (viewingGameIndex === -1) {
                                 scoreboard.displayGame(currentGame);
-                                console.log("Viewing current game");
+                                logToServer("Viewing current game");
                             } else {
                                 scoreboard.displayGame(gameHistory[viewingGameIndex]);
-                                console.log(`Viewing historical game #${gameHistory[viewingGameIndex].gameNumber}`);
+                                logToServer(`Viewing historical game #${gameHistory[viewingGameIndex].gameNumber}`);
                             }
                         }
                     } else {
@@ -667,7 +708,7 @@ function animate(timestamp, frame) {
     if (gameState === GameState.RESETTING) {
         cleanupRound();
         gameState = GameState.SHOOTING;
-        console.log("Returning to SHOOTING state.");
+        logToServer("Returning to SHOOTING state.");
     }
 
     if (bowController && bow) {
@@ -756,15 +797,19 @@ function processScores() {
 
     // Identify and store the arrows for the current round
     currentRoundArrows = firedArrows.slice(startIndex, startIndex + roundSize);
+    logToServer(`Processing arrows with scores: [${currentRoundArrows.map(a => a.score).join(', ')}]`);
 
     const scores = currentRoundArrows.map(arrow => arrow.score || 'M');
+    logToServer(`Scores before sorting: ${JSON.stringify(scores)}`);
 
     // Sort scores for display (X is highest)
     const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
     scores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
+    logToServer(`Scores after sorting: ${JSON.stringify(scores)}`);
 
     // Add new scores to the current game object
     currentGame.scores.push(...scores);
+    logToServer(`All game scores so far: ${JSON.stringify(currentGame.scores)}`);
 
     // Recalculate all totals for the current game
     currentGame = calculateGameTotals(currentGame);
@@ -787,15 +832,27 @@ function cleanupRound() {
     // Reset target position
     if (target) {
         target.userData.inScoringPosition = false;
-        target.userData.ringBodies.forEach(body => {
-            body.setNextKinematicTranslation(target.position, true);
-            body.setNextKinematicRotation(target.quaternion, true);
+        // Move the parent group back to its original position
+        target.position.copy(target.userData.originalPosition);
+
+        // Update each physics body to match its corresponding mesh's new world position
+        target.children.forEach(ringMesh => {
+            if (ringMesh.userData.physicsBody) {
+                const body = ringMesh.userData.physicsBody;
+                const newWorldPos = new THREE.Vector3();
+                ringMesh.getWorldPosition(newWorldPos);
+                body.setNextKinematicTranslation(newWorldPos, true);
+
+                const newWorldQuat = new THREE.Quaternion();
+                ringMesh.getWorldQuaternion(newWorldQuat);
+                body.setNextKinematicRotation(newWorldQuat, true);
+            }
         });
     }
 
     // After 12 arrows are scored, finalize the game
     if (currentGame.scores.length >= 12) {
-        console.log("Full 12-shot game finished. Saving to history.");
+        logToServer("Full 12-shot game finished. Saving to history.");
         gameHistory.push(currentGame);
         runningTotal = currentGame.runningTotal;
         startNewGame();
@@ -804,16 +861,33 @@ function cleanupRound() {
 
 // --- Game Logic ---
 
+function logToServer(message) {
+    fetch('savelog.php', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ log_data: message }),
+    })
+    .catch(error => {
+        console.error('Could not save log to server:', error);
+    });
+}
+
 function toggleDebugMode() {
     if (!target) return;
     debugMode = !debugMode;
-    console.log(`Debug mode toggled: ${debugMode}`);
+    logToServer(`Debug mode toggled: ${debugMode}`);
 
-    target.children.forEach(ring => {
-        if (debugMode) {
-            ring.material = debugMaterial;
-        } else {
-            ring.material = originalMaterials.get(ring.uuid);
+    target.children.forEach(child => {
+        // Only toggle materials for the rings, not for attached arrows,
+        // by checking if we have a backed-up material for it.
+        if (originalMaterials.has(child.uuid)) {
+            if (debugMode) {
+                child.material = debugMaterial;
+            } else {
+                child.material = originalMaterials.get(child.uuid);
+            }
         }
     });
 }
@@ -868,7 +942,7 @@ function startNewGame() {
     if (debugDisplay) updateDebugDisplay();
     viewingGameIndex = -1; // View the new current game
     scoreboard.displayGame(currentGame);
-    console.log(`Starting Game #${currentGame.gameNumber}`);
+    logToServer(`Starting Game #${currentGame.gameNumber}`);
 }
 
 function calculateGameTotals(game) {
