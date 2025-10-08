@@ -341,7 +341,7 @@ async function placeScene(floorY) {
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
 
-        collider.userData = { type: 'target' };
+        collider.userData = { type: 'target', ringName: ring.name };
     });
 
     bow = gltf.scene.getObjectByName('bow');
@@ -494,7 +494,9 @@ function animate(timestamp, frame) {
             arrow.hasScored = true;
             const scoreValue = colliderToScoreMap.get(otherCollider.handle);
             arrow.score = scoreValue;
-            console.log(`Arrow hit target for score: ${arrow.score}`);
+            const ringName = otherCollider.userData.ringName || 'unknown';
+            logHit(ringName, scoreValue);
+            console.log(`Arrow hit target ring ${ringName} for score: ${arrow.score}`);
 
             // To make arrow "stick," remove its physics body and parent it to the target.
             // The `attach` method correctly handles preserving the world transform.
@@ -507,6 +509,7 @@ function animate(timestamp, frame) {
         } else if (otherCollider?.userData?.type === 'floor') {
             arrow.hasScored = true;
             arrow.score = 'M'; // Miss
+            logHit('floor', 'M');
             console.log('Arrow hit floor. Miss.');
              // Make arrow stick to floor
             if (arrow.body) {
@@ -744,16 +747,16 @@ function cleanupRound() {
     });
     currentRoundArrows = []; // Clear the temporary array
 
-    // Reset target position
-    if (target) {
-        target.userData.inScoringPosition = false;
-        // Move the visual group first, then sync physics bodies to it.
-        target.position.copy(target.userData.originalPosition);
-        target.userData.ringBodies.forEach(body => {
-            body.setNextKinematicTranslation(target.position, true);
-            body.setNextKinematicRotation(target.quaternion, true);
-        });
-    }
+    // Reset target position - REMOVED so target stays in the inspection position.
+    // if (target) {
+    //     target.userData.inScoringPosition = false;
+    //     // Move the visual group first, then sync physics bodies to it.
+    //     target.position.copy(target.userData.originalPosition);
+    //     target.userData.ringBodies.forEach(body => {
+    //         body.setNextKinematicTranslation(target.position, true);
+    //         body.setNextKinematicRotation(target.quaternion, true);
+    //     });
+    // }
 
     // After 12 arrows are scored, finalize the game
     if (currentGame.scores.length >= 12) {
@@ -765,6 +768,20 @@ function cleanupRound() {
 }
 
 // --- Game Logic ---
+
+function logHit(hitObjectName, assignedScore) {
+    const data = new FormData();
+    data.append('hit', hitObjectName);
+    data.append('score', assignedScore);
+
+    fetch('savelog.php', {
+        method: 'POST',
+        body: data
+    })
+    .then(response => response.text())
+    .then(text => console.log('Log response:', text))
+    .catch(error => console.error('Error logging hit:', error));
+}
 
 function startNewGame() {
     currentGame = {
