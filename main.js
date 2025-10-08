@@ -184,16 +184,14 @@ let colliderToRawNameMap; // For debug display
 // --- Debug ---
 let debugDisplay;
 let last3HitsRaw = [];
-let debugMode = false;
-let debugMaterial;
-const originalMaterials = new Map();
+let debugMaterial; // For the cyan collision mesh
+let debugTarget; // The visual representation of the collision meshes
 
 // --- Controller and State ---
 let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
 let aButtonPressed = [false, false]; // To track 'A' button state for each controller
-let bButtonPressed = [false, false]; // To track 'B' button state
 let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
 
 async function init() {
@@ -236,12 +234,11 @@ async function init() {
 
     createDebugDisplay();
 
-    // Create debug material
+    // Create cyan debug material for collision mesh visualization
     debugMaterial = new THREE.MeshBasicMaterial({
-        color: 0x00ff00,
+        color: 0x00ffff, // Cyan
         opacity: 0.5,
-        transparent: true,
-        wireframe: true
+        transparent: true
     });
 
     startNewGame();
@@ -329,63 +326,55 @@ async function placeScene(floorY) {
     floorCollider.userData = { type: 'floor' };
 
     target = new THREE.Group();
-    scene.add(target);
-
-    target.userData.inScoringPosition = false;
-
-    // Collect all ring meshes from the loaded model
-    const allRings = [];
     gltf.scene.traverse(child => {
         if (child.isMesh && !isNaN(parseInt(child.name))) {
-            allRings.push(child);
+            target.add(child.clone());
         }
     });
 
-    // Sort rings by score value, descending (11, 10, 9...) to control layout
-    allRings.sort((a, b) => parseInt(b.name) - parseInt(a.name));
+    // Per user request, place the target at the close inspection position for easier debugging
+    const inspectionPos = new THREE.Vector3(0, floorY + 1.2, -3);
+    target.position.copy(inspectionPos);
+    target.rotation.y = Math.PI;
+    scene.add(target);
 
-    // Define layout parameters
-    const ySpacing = 0.45;
-    const xSpacing = 0.5;
-    const startY = floorY + 2.5;
-    const startZ = -5;
+    target.userData.originalPosition = new THREE.Vector3(0, floorY + 1.2, -10); // Final farther position
+    target.userData.scoringPosition = inspectionPos; // Closer position
+    target.userData.inScoringPosition = false;
+    target.userData.ringBodies = [];
 
-    allRings.forEach((ring, i) => {
-        const ringClone = ring.clone();
+    // Create a group for the debug visualization meshes
+    debugTarget = new THREE.Group();
+    debugTarget.position.copy(target.position);
+    debugTarget.rotation.copy(target.rotation);
+    scene.add(debugTarget);
 
-        // 1. Calculate the absolute world position for this ring
-        const yPos = startY - (i * ySpacing);
-        const xPos = (i % 2 === 0 ? -1 : 1) * xSpacing * Math.floor((i + 1) / 2);
-        const worldPos = new THREE.Vector3(xPos, yPos, startZ);
-
-        // Store original and scoring positions on the mesh itself
-        ringClone.userData.originalPosition = worldPos.clone();
-        ringClone.userData.scoringPosition = worldPos.clone().setZ(startZ + 2);
-
-        // 2. Set the visual mesh's position to the calculated world position
-        ringClone.position.copy(worldPos);
-        target.add(ringClone);
-
-        // Store original material for debug mode
-        originalMaterials.set(ringClone.uuid, ringClone.material);
-
-        // 3. Create the physics body at the exact same world position
+    target.children.forEach(ring => {
         const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
-            .setTranslation(worldPos.x, worldPos.y, worldPos.z);
+            .setTranslation(target.position.x, target.position.y, target.position.z)
+            .setRotation(target.quaternion);
         const ringBody = world.createRigidBody(ringBodyDesc);
-        ringClone.userData.physicsBody = ringBody; // Link body to mesh
+        target.userData.ringBodies.push(ringBody); // Add body to the group's list
 
-        const colliderDesc = RAPIER.ColliderDesc.trimesh(
-            ringClone.geometry.attributes.position.array,
-            ringClone.geometry.index.array
-        )
-        .setCollisionGroups(TARGET_GROUP_FILTER)
-        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+        const vertices = ring.geometry.attributes.position.array;
+        const indices = ring.geometry.index.array;
+
+        const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices)
+            .setCollisionGroups(TARGET_GROUP_FILTER)
+            .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
         const collider = world.createCollider(colliderDesc, ringBody);
+
+        // Create a visible mesh for the collider geometry
+        const debugGeom = new THREE.BufferGeometry();
+        debugGeom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        debugGeom.setIndex(new THREE.BufferAttribute(indices, 1));
+        const debugMesh = new THREE.Mesh(debugGeom, debugMaterial);
+        debugTarget.add(debugMesh);
 
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
-        colliderToRawNameMap.set(collider.handle, ring.name);
+        colliderToRawNameMap.set(collider.handle, ring.name); // Store raw name for debug
+
         collider.userData = { type: 'target' };
     });
 
@@ -475,6 +464,7 @@ function cleanupScene() {
         target.userData.ringBodies.forEach(body => world.removeRigidBody(body));
         scene.remove(target);
     }
+    if (debugTarget) scene.remove(debugTarget);
     if (bow) scene.remove(bow);
     if (bowstring) scene.remove(bowstring);
 
@@ -600,14 +590,12 @@ function animate(timestamp, frame) {
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
                 target.userData.inScoringPosition = true;
-                // Move each ring (visual and physics) to its scoring position
-                target.children.forEach(ringMesh => {
-                    if (ringMesh.userData.physicsBody) {
-                        const body = ringMesh.userData.physicsBody;
-                        const scoringPos = ringMesh.userData.scoringPosition;
-                        ringMesh.position.copy(scoringPos); // Move visual mesh
-                        body.setNextKinematicTranslation(scoringPos, true); // Move physics body
-                    }
+                target.position.copy(target.userData.scoringPosition);
+                if (debugTarget) debugTarget.position.copy(target.userData.scoringPosition);
+
+                target.userData.ringBodies.forEach(body => {
+                    body.setNextKinematicTranslation(target.position, true);
+                    body.setNextKinematicRotation(target.quaternion, true);
                 });
             }
             break;
@@ -638,16 +626,6 @@ function animate(timestamp, frame) {
                     }
                 } else {
                     aButtonPressed[i] = false;
-                }
-
-                // --- 'B' button for toggling debug visuals ---
-                if (controller.gamepad.buttons[5] && controller.gamepad.buttons[5].pressed) {
-                    if (!bButtonPressed[i]) {
-                        bButtonPressed[i] = true;
-                        toggleDebugMode();
-                    }
-                } else {
-                    bButtonPressed[i] = false;
                 }
 
                 // --- History Navigation with Joystick ---
@@ -815,14 +793,12 @@ function cleanupRound() {
     // Reset target position
     if (target) {
         target.userData.inScoringPosition = false;
-        // Move each ring (visual and physics) back to its original position
-        target.children.forEach(ringMesh => {
-            if (ringMesh.userData.physicsBody) {
-                const body = ringMesh.userData.physicsBody;
-                const originalPos = ringMesh.userData.originalPosition;
-                ringMesh.position.copy(originalPos); // Move visual mesh
-                body.setNextKinematicTranslation(originalPos, true); // Move physics body
-            }
+        target.position.copy(target.userData.originalPosition);
+        if (debugTarget) debugTarget.position.copy(target.userData.originalPosition);
+
+        target.userData.ringBodies.forEach(body => {
+            body.setNextKinematicTranslation(target.position, true);
+            body.setNextKinematicRotation(target.quaternion, true);
         });
     }
 
