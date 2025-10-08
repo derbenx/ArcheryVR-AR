@@ -680,10 +680,33 @@ function animate(timestamp, frame) {
 
 
     firedArrows.forEach(obj => {
-        if (obj.body) {
+        if (obj.body && obj.body.isDynamic()) {
+            // Update position from physics
             obj.mesh.position.copy(obj.body.translation());
-            obj.mesh.quaternion.copy(obj.body.rotation());
+
+            // Align rotation with velocity to create a flight arc
+            const velocity = obj.body.linvel();
+            const speed = Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2);
+
+            // Only update rotation if the arrow is actually moving to avoid jittering
+            if (speed > 0.1) {
+                const forward = arrowTemplate.userData.forward.clone();
+                const velocityDirection = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
+
+                // Create a quaternion that rotates the arrow from its default forward direction
+                // to its current velocity direction.
+                const rotation = new THREE.Quaternion().setFromUnitVectors(forward, velocityDirection);
+                obj.mesh.quaternion.copy(rotation);
+                obj.body.setRotation(rotation, true); // Also update the physics body's rotation
+            } else {
+                 // If not moving fast, just sync with the physics body's last rotation
+                 obj.mesh.quaternion.copy(obj.body.rotation());
+            }
+        } else if (obj.body) { // For kinematic (being drawn) or fixed (hit floor) bodies
+             obj.mesh.position.copy(obj.body.translation());
+             obj.mesh.quaternion.copy(obj.body.rotation());
         }
+        // Arrows stuck in the target have no body, so their transform is handled by being a child of the target
     });
 
     if (bow && bowstring) {
