@@ -195,7 +195,7 @@ function onSelectStart(event) {
             const body = world.createRigidBody(arrowBodyDesc);
             const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length / 2).setMass(0.1).setCollisionGroups(ARROW_GROUP_FILTER).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
             const collider = world.createCollider(colliderDesc, body);
-            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false, score: 'M' };
+            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false, score: 'M', contacts: [] };
             collider.userData = { type: 'arrow', arrow: arrowObject };
         }
         arrowController = controller;
@@ -209,7 +209,6 @@ function onSelectEnd(event) {
 }
 
 async function placeScene(floorY) {
-    // --- Cleanup previous scene objects if they exist ---
     if (target) {
         if (target.userData && target.userData.ringBodies) {
             target.userData.ringBodies.forEach(body => world.removeRigidBody(body));
@@ -218,7 +217,6 @@ async function placeScene(floorY) {
     }
     if (floorBody) world.removeRigidBody(floorBody);
 
-    // --- Create new scene objects ---
     const floorBodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(0, floorY, 0);
     floorBody = world.createRigidBody(floorBodyDesc);
     const floorCollider = world.createCollider(RAPIER.ColliderDesc.cuboid(100, 0.1, 100).setCollisionGroups(FLOOR_GROUP_FILTER), floorBody);
@@ -240,30 +238,19 @@ async function placeScene(floorY) {
 
     target.userData.originalPosition = new THREE.Vector3(0, floorY + 1.2, -10);
     target.userData.scoringPosition = inspectionPos;
-    target.userData.inScoringPosition = true; // Start in inspection position
+    target.userData.inScoringPosition = true;
     target.userData.ringBodies = [];
 
     target.children.forEach(ring => {
-        // Create the physics body for the ring, positioned with the parent group
-        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
-            .setTranslation(target.position.x, target.position.y, target.position.z)
-            .setRotation(target.quaternion);
+        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(target.position.x, target.position.y, target.position.z).setRotation(target.quaternion);
         const ringBody = world.createRigidBody(ringBodyDesc);
         target.userData.ringBodies.push(ringBody);
-
-        // Create the collider from the ring's geometry
         const vertices = ring.geometry.attributes.position.array;
         const indices = ring.geometry.index.array;
-        const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices)
-            .setCollisionGroups(TARGET_GROUP_FILTER)
-            .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+        const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices).setCollisionGroups(TARGET_GROUP_FILTER).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
         const collider = world.createCollider(colliderDesc, ringBody);
-
-        // Create the cyan debug mesh and add it as a direct child of the ring
         const debugMesh = new THREE.Mesh(ring.geometry, debugMaterial);
-        ring.add(debugMesh); // This ensures it inherits the transform
-
-        // Set up scoring maps
+        ring.add(debugMesh);
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
         colliderToRawNameMap.set(collider.handle, ring.name);
@@ -378,6 +365,7 @@ function animate(timestamp, frame) {
     }
 
     if (world) world.step(eventQueue);
+
     eventQueue.drainCollisionEvents((handle1, handle2, started) => {
         if (!started) return;
         const collider1 = world.getCollider(handle1);
@@ -390,25 +378,26 @@ function animate(timestamp, frame) {
             arrow = collider2.userData.arrow;
             otherCollider = collider1;
         } else { return; }
-        if (arrow.hasScored) return;
+
         if (otherCollider?.userData?.type === 'target') {
-            arrow.hasScored = true;
-            const scoreValue = colliderToScoreMap.get(otherCollider.handle);
             const rawName = colliderToRawNameMap.get(otherCollider.handle);
-            arrow.score = scoreValue;
-            logToServer(`Arrow hit target for score: ${arrow.score} (Raw Ring: ${rawName})`);
-            last3HitsRaw.push(rawName);
-            if (last3HitsRaw.length > 3) last3HitsRaw.shift();
-            updateDebugDisplay();
-            if (arrow.body) {
-                target.attach(arrow.mesh);
-                world.removeRigidBody(arrow.body);
-                arrow.body = null;
+            logToServer(`Arrow Contact: Ring ${rawName}`);
+            if (!arrow.contacts.includes(rawName)) {
+                arrow.contacts.push(rawName);
+            }
+            if (!arrow.hasScored) {
+                arrow.hasScored = true;
+                if (arrow.body) {
+                    target.attach(arrow.mesh);
+                    world.removeRigidBody(arrow.body);
+                    arrow.body = null;
+                }
             }
         } else if (otherCollider?.userData?.type === 'floor') {
+            if (arrow.hasScored) return;
             arrow.hasScored = true;
             arrow.score = 'M';
-            logToServer('Arrow hit floor. Miss.');
+            logToServer('Arrow Contact: Floor (Miss)');
             if (arrow.body) {
                 arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
             }
@@ -571,15 +560,40 @@ function processScores() {
     const roundSize = 3;
     const startIndex = currentGame.scores.length;
     if (firedArrows.length < startIndex + roundSize) { return; }
+
     currentRoundArrows = firedArrows.slice(startIndex, startIndex + roundSize);
-    logToServer(`Processing arrows with scores: [${currentRoundArrows.map(a => a.score).join(', ')}]`);
-    const scores = currentRoundArrows.map(arrow => arrow.score || 'M');
-    logToServer(`Scores before sorting: ${JSON.stringify(scores)}`);
+    logToServer(`Processing arrows. Arrow 1 contacts: [${currentRoundArrows[0].contacts.join(', ')}], Arrow 2 contacts: [${currentRoundArrows[1].contacts.join(', ')}], Arrow 3 contacts: [${currentRoundArrows[2].contacts.join(', ')}]`);
+
+    const finalScores = currentRoundArrows.map(arrow => {
+        if (arrow.score === 'M') return 'M'; // It hit the floor
+        if (arrow.contacts.length === 0) return 'M'; // It hit nothing
+
+        // Line-breaker logic: find the highest value in the contacts list
+        let highestScore = 0;
+        arrow.contacts.forEach(contact => {
+            const scoreVal = parseInt(contact, 10);
+            if (scoreVal > highestScore) {
+                highestScore = scoreVal;
+            }
+        });
+
+        if (highestScore === 11) return 'X';
+        if (highestScore === 0) return 'M';
+        return highestScore.toString();
+    });
+
+    logToServer(`Final scores after line-breaker: ${JSON.stringify(finalScores)}`);
+    last3HitsRaw = finalScores; // Update debug display with chosen scores
+    updateDebugDisplay();
+
+    // Sort scores for display on the main scoreboard
     const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
-    scores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
-    logToServer(`Scores after sorting: ${JSON.stringify(scores)}`);
-    currentGame.scores.push(...scores);
+    finalScores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
+    logToServer(`Scores after sorting for scoreboard: ${JSON.stringify(finalScores)}`);
+
+    currentGame.scores.push(...finalScores);
     logToServer(`All game scores so far: ${JSON.stringify(currentGame.scores)}`);
+
     currentGame = calculateGameTotals(currentGame);
     scoreboard.displayGame(currentGame);
 }
@@ -595,11 +609,12 @@ function cleanupRound() {
     currentRoundArrows = [];
     if (target) {
         target.userData.inScoringPosition = false;
-        target.position.copy(target.userData.originalPosition);
-        target.userData.ringBodies.forEach(body => {
-            body.setNextKinematicTranslation(target.position, true);
-            body.setNextKinematicRotation(target.quaternion, true);
-        });
+        // For debugging, keep the target at the close position.
+        // target.position.copy(target.userData.originalPosition);
+        // target.userData.ringBodies.forEach(body => {
+        //     body.setNextKinematicTranslation(target.position, true);
+        //     body.setNextKinematicRotation(target.quaternion, true);
+        // });
     }
     if (currentGame.scores.length >= 12) {
         logToServer("Full 12-shot game finished. Saving to history.");
@@ -642,7 +657,7 @@ function updateDebugDisplay() {
     context.font = 'bold 32px monospace';
     context.textAlign = 'center';
     context.textBaseline = 'middle';
-    const text = `Raw Hits: [${last3HitsRaw.join(', ')}]`;
+    const text = `Chosen Scores: [${last3HitsRaw.join(', ')}]`;
     context.fillText(text, canvas.width / 2, canvas.height / 2);
     texture.needsUpdate = true;
 }
