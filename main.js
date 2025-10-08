@@ -4,7 +4,135 @@ import { ARButton } from 'three/addons/webxr/ARButton.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { XRPlanes } from 'three/addons/webxr/XRPlanes.js';
-import { Scoreboard } from './js/Scoreboard.js';
+
+/**
+ * A class for creating and managing a visual scoreboard in a Three.js scene.
+ * The scoreboard is a "dumb" component that only renders game data passed to it.
+ * All calculation and state management is handled externally.
+ */
+class Scoreboard {
+    constructor() {
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = 2048; // High-resolution canvas for clarity
+        this.canvas.height = 256;
+        this.context = this.canvas.getContext('2d');
+
+        this.texture = new THREE.CanvasTexture(this.canvas);
+        this.texture.encoding = THREE.sRGBEncoding;
+        this.texture.anisotropy = 16;
+
+        // Plane geometry is sized to match the new aspect ratio
+        const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, side: THREE.DoubleSide });
+        const geometry = new THREE.PlaneGeometry(4.2, 0.5);
+        this.mesh = new THREE.Mesh(geometry, material);
+
+        this.headers = ["#", "1", "2", "3", "4", "5", "6", "END", "7", "8", "9", "10", "11", "12", "END", "H", "G", "Dozen", "R/T"];
+
+        this.drawEmptyBoard(); // Draw the initial empty board
+    }
+
+    /**
+     * Draws the static background, grid, and headers for the scoreboard.
+     */
+    drawEmptyBoard() {
+        const ctx = this.context;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        // Background
+        ctx.fillStyle = '#003366';
+        ctx.fillRect(0, 0, w, h);
+
+        // Grid and Headers
+        ctx.strokeStyle = 'white';
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 36px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const cellWidth = w / this.headers.length;
+
+        this.headers.forEach((header, i) => {
+            const x = i * cellWidth;
+            ctx.strokeRect(x, 0, cellWidth, h / 2); // Header boxes
+            ctx.fillText(header, x + cellWidth / 2, h * 0.25);
+            ctx.strokeRect(x, h / 2, cellWidth, h / 2); // Empty score boxes
+        });
+
+        this.texture.needsUpdate = true;
+    }
+
+    /**
+     * Displays a complete game's data on the scoreboard.
+     * @param {object} gameData - An object containing all data for one game.
+     * Example: { gameNumber: 1, scores: ['X', '10', ...], end1Total: 55, ... }
+     */
+    displayGame(gameData) {
+        this.drawEmptyBoard(); // Start with a clean slate
+
+        const ctx = this.context;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+        const cellWidth = w / this.headers.length;
+        const scoreY = h * 0.75;
+
+        ctx.fillStyle = 'white';
+        ctx.font = '48px sans-serif';
+
+        // --- Draw Game Number ---
+        ctx.fillText(`#${gameData.gameNumber}`, cellWidth / 2, scoreY);
+
+        // --- Draw Individual Arrow Scores ---
+        const getCellIndex = (scoreIndex) => {
+            if (scoreIndex < 6) return scoreIndex + 1;      // Scores 0-5  -> Cells 1-6
+            if (scoreIndex < 12) return scoreIndex + 2; // Scores 6-11 -> Cells 8-13
+            return -1;
+        };
+
+        gameData.scores.forEach((score, i) => {
+            const cellIndex = getCellIndex(i);
+            if (cellIndex !== -1) {
+                const x = cellIndex * cellWidth + cellWidth / 2;
+                ctx.fillText(score.toString(), x, scoreY);
+            }
+        });
+
+        // --- Draw Totals ---
+        const end1Cell = 7;
+        const end2Cell = 14;
+        const hCell = 15;
+        const gCell = 16;
+        const dozenCell = 17;
+        const rtCell = 18;
+
+        if (gameData.scores.length >= 6) {
+            ctx.fillText(gameData.end1Total.toString(), end1Cell * cellWidth + cellWidth / 2, scoreY);
+        }
+        if (gameData.scores.length >= 12) {
+            ctx.fillText(gameData.end2Total.toString(), end2Cell * cellWidth + cellWidth / 2, scoreY);
+            ctx.fillText(gameData.dozenTotal.toString(), dozenCell * cellWidth + cellWidth / 2, scoreY);
+            ctx.fillText(gameData.runningTotal.toString(), rtCell * cellWidth + cellWidth / 2, scoreY);
+        }
+
+        // Hits and Golds are updated continuously
+        ctx.fillText(gameData.hits.toString(), hCell * cellWidth + cellWidth / 2, scoreY);
+        ctx.fillText(gameData.golds.toString(), gCell * cellWidth + cellWidth / 2, scoreY);
+
+        this.texture.needsUpdate = true;
+    }
+
+    /**
+     * Resets the scoreboard to its initial empty state.
+     */
+    reset() {
+        this.drawEmptyBoard();
+    }
+
+    getMesh() {
+        return this.mesh;
+    }
+}
+
 
 // --- Three.js and Global Variables ---
 let camera, scene, renderer;
@@ -29,10 +157,16 @@ const FLOOR_GROUP_FILTER = (GROUP_FLOOR << 16) | GROUP_ARROW;
 let bow, target, bowstring;
 let arrowTemplate;
 let arrowObject = null;
-let firedArrows = [];
-let currentRoundArrows = []; // Holds the 3 arrows currently being processed
+let firedArrows = []; // Master list of all arrows shot in the current 12-shot game
+let currentRoundArrows = []; // The 3 arrows being processed after a round
 
-// --- Game State ---
+// --- Game Data and State ---
+let gameHistory = [];
+let currentGame = null;
+let runningTotal = 0;
+let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for history.
+
+// --- Game State Machine ---
 const GameState = {
     SHOOTING: 'shooting',
     PROCESSING_SCORE: 'processing_score',
@@ -51,6 +185,7 @@ let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
 let aButtonPressed = [false, false]; // To track 'A' button state for each controller
+let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
 
 async function init() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -89,6 +224,8 @@ async function init() {
     scoreboardMesh.position.set(0, 1.6, -2.5);
     scene.add(scoreboardMesh);
 
+    startNewGame();
+
 
     renderer.xr.addEventListener('sessionend', cleanupScene);
     window.addEventListener('resize', onWindowResize);
@@ -123,6 +260,14 @@ function setupControllers() {
 
 function onSelectStart(event) {
     const controller = event.target;
+
+    // If viewing history, snap back to the current game upon drawing an arrow
+    if (viewingGameIndex !== -1) {
+        viewingGameIndex = -1;
+        scoreboard.displayGame(currentGame);
+        console.log("Switched back to current game due to drawing arrow.");
+    }
+
     if (bowController && controller !== bowController) {
         // Only allow drawing a new arrow if in SHOOTING state
         if (gameState === GameState.SHOOTING && !arrowObject) {
@@ -299,13 +444,21 @@ function cleanupScene() {
         if (obj.mesh) scene.remove(obj.mesh);
         if (obj.body) world.removeRigidBody(obj.body);
     });
+    currentRoundArrows.forEach(obj => {
+        if (obj.mesh) scene.remove(obj.mesh);
+        if (obj.body) world.removeRigidBody(obj.body);
+    });
 
     if (floorBody) world.removeRigidBody(floorBody);
 
     target = bow = bowstring = arrowTemplate = arrowObject = bowController = arrowController = floorBody = null;
-    firedArrows = [];
+
+    // Reset game state
+    gameHistory = [];
+    runningTotal = 0;
+    startNewGame();
+
     sceneSetupInitiated = false;
-    if (scoreboard) scoreboard.reset();
 }
 
 function animate(timestamp, frame) {
@@ -346,20 +499,10 @@ function animate(timestamp, frame) {
             arrow.score = scoreValue;
             console.log(`Arrow hit target for score: ${arrow.score}`);
 
-            // To make arrow "stick," remove its physics body and parent it to the target
+            // To make arrow "stick," remove its physics body and parent it to the target.
+            // The `attach` method correctly handles preserving the world transform.
             if (arrow.body) {
-                // 1. Get current world transform of the arrow
-                const worldPos = arrow.mesh.position.clone();
-                const worldQuat = arrow.mesh.quaternion.clone();
-
-                // 2. Attach to target and set local transform
                 target.attach(arrow.mesh);
-
-                // This maintains the arrow's visual position and orientation relative to the target
-                arrow.mesh.position.copy(worldPos);
-                arrow.mesh.quaternion.copy(worldQuat);
-
-                // 3. Remove physics body
                 world.removeRigidBody(arrow.body);
                 arrow.body = null;
             }
@@ -375,12 +518,6 @@ function animate(timestamp, frame) {
         }
     });
 
-    // Sync target visual mesh with its physics body
-    if (target && target.userData.ringBodies.length > 0) {
-        target.position.copy(target.userData.ringBodies[0].translation());
-        target.quaternion.copy(target.userData.ringBodies[0].rotation());
-    }
-
     // --- Game State Machine ---
     switch (gameState) {
         case GameState.PROCESSING_SCORE:
@@ -392,8 +529,11 @@ function animate(timestamp, frame) {
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
                 target.userData.inScoringPosition = true;
+                // Move the visual group first, then sync physics bodies to it.
+                target.position.copy(target.userData.scoringPosition);
                 target.userData.ringBodies.forEach(body => {
-                    body.setNextKinematicTranslation(target.userData.scoringPosition, true);
+                    body.setNextKinematicTranslation(target.position, true);
+                    body.setNextKinematicRotation(target.quaternion, true);
                 });
             }
             break;
@@ -408,14 +548,14 @@ function animate(timestamp, frame) {
         for (let i = 0; i < 2; i++) {
             const controller = renderer.xr.getController(i);
             if (controller && controller.gamepad) {
-                // Grip button for holding the bow
+                // --- Grip button for holding the bow ---
                 if (controller.gamepad.buttons[1].pressed) {
                     if (!bowController) bowController = controller;
                 } else {
                     if (bowController === controller) bowController = null;
                 }
 
-                // 'A' button (or equivalent) for scoring
+                // --- 'A' button for scoring ---
                 if (gameState === GameState.INSPECTING && controller.gamepad.buttons[4] && controller.gamepad.buttons[4].pressed) {
                     if (!aButtonPressed[i]) {
                         aButtonPressed[i] = true;
@@ -424,6 +564,41 @@ function animate(timestamp, frame) {
                     }
                 } else {
                     aButtonPressed[i] = false;
+                }
+
+                // --- History Navigation with Joystick ---
+                if (controller.gamepad.axes.length > 3) {
+                    const joystickY = controller.gamepad.axes[3]; // Typically the Y-axis of the right stick
+
+                    if (Math.abs(joystickY) > 0.8) { // High threshold for deliberate movement
+                        if (!joystickMoved[i]) {
+                            joystickMoved[i] = true;
+                            if (joystickY < 0) { // Stick moved up
+                                if (viewingGameIndex > -1) {
+                                    viewingGameIndex--;
+                                } else if (gameHistory.length > 0) { // Wrap from current to last historical
+                                    viewingGameIndex = gameHistory.length - 1;
+                                }
+                            } else { // Stick moved down
+                                if (viewingGameIndex < gameHistory.length - 1) {
+                                    viewingGameIndex++;
+                                } else if (viewingGameIndex !== -1) { // Wrap from last historical to current
+                                    viewingGameIndex = -1;
+                                }
+                            }
+
+                            // Update scoreboard to show the selected game
+                            if (viewingGameIndex === -1) {
+                                scoreboard.displayGame(currentGame);
+                                console.log("Viewing current game");
+                            } else {
+                                scoreboard.displayGame(gameHistory[viewingGameIndex]);
+                                console.log(`Viewing historical game #${gameHistory[viewingGameIndex].gameNumber}`);
+                            }
+                        }
+                    } else {
+                        joystickMoved[i] = false; // Reset flag when stick is centered
+                    }
                 }
             }
         }
@@ -514,7 +689,7 @@ function animate(timestamp, frame) {
 
 function processScores() {
     const roundSize = 3;
-    const startIndex = scoreboard.scores.length;
+    const startIndex = currentGame.scores.length;
     if (firedArrows.length < startIndex + roundSize) {
         return;
     }
@@ -523,14 +698,19 @@ function processScores() {
     currentRoundArrows = firedArrows.slice(startIndex, startIndex + roundSize);
 
     const scores = currentRoundArrows.map(arrow => arrow.score || 'M');
-    const scoreValueForSort = (s) => {
-        if (s === 'X') return 11; // Sort 'X' as highest
-        if (s === 'M') return 0;
-        return parseInt(s, 10);
-    };
+
+    // Sort scores for display (X is highest)
+    const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
     scores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
 
-    scoreboard.updateScores(scores);
+    // Add new scores to the current game object
+    currentGame.scores.push(...scores);
+
+    // Recalculate all totals for the current game
+    currentGame = calculateGameTotals(currentGame);
+
+    // Update the scoreboard with the new data
+    scoreboard.displayGame(currentGame);
 }
 
 function cleanupRound() {
@@ -539,6 +719,7 @@ function cleanupRound() {
         if (obj.mesh) obj.mesh.removeFromParent();
         if (obj.body) {
             try { world.removeRigidBody(obj.body); } catch (e) {}
+            obj.body = null; // Nullify the body to prevent future access
         }
     });
     currentRoundArrows = []; // Clear the temporary array
@@ -546,17 +727,58 @@ function cleanupRound() {
     // Reset target position
     if (target) {
         target.userData.inScoringPosition = false;
+        // Move the visual group first, then sync physics bodies to it.
+        target.position.copy(target.userData.originalPosition);
         target.userData.ringBodies.forEach(body => {
-            body.setNextKinematicTranslation(target.userData.originalPosition, true);
+            body.setNextKinematicTranslation(target.position, true);
+            body.setNextKinematicRotation(target.quaternion, true);
         });
     }
 
-    // After 12 arrows are scored, reset the board and the master arrow list for a new game
-    if (scoreboard.scores.length >= 12) {
-        console.log("Full 12-shot game finished. Ready for a new one.");
-        scoreboard.reset();
-        firedArrows = []; // Clear the master list for the new game
+    // After 12 arrows are scored, finalize the game
+    if (currentGame.scores.length >= 12) {
+        console.log("Full 12-shot game finished. Saving to history.");
+        gameHistory.push(currentGame);
+        runningTotal = currentGame.runningTotal;
+        startNewGame();
     }
 }
+
+// --- Game Logic ---
+
+function startNewGame() {
+    currentGame = {
+        gameNumber: gameHistory.length + 1,
+        scores: [],
+        end1Total: 0,
+        end2Total: 0,
+        dozenTotal: 0,
+        hits: 0,
+        golds: 0,
+        runningTotal: runningTotal // Carry over the running total
+    };
+    firedArrows = [];
+    currentRoundArrows = [];
+    viewingGameIndex = -1; // View the new current game
+    scoreboard.displayGame(currentGame);
+    console.log(`Starting Game #${currentGame.gameNumber}`);
+}
+
+function calculateGameTotals(game) {
+    const parseScore = (s) => (s === 'X' ? 10 : (s === 'M' ? 0 : parseInt(s, 10)));
+    const scoresNumeric = game.scores.map(parseScore);
+
+    game.end1Total = scoresNumeric.slice(0, 6).reduce((a, b) => a + b, 0);
+    game.end2Total = scoresNumeric.slice(6, 12).reduce((a, b) => a + b, 0);
+    game.dozenTotal = game.end1Total + game.end2Total;
+    game.hits = game.scores.filter(s => s !== 'M').length;
+    game.golds = game.scores.filter(s => s === 'X' || s === '10').length;
+
+    // R/T is the sum of previous games' dozen totals plus the current game's dozen total
+    game.runningTotal = runningTotal + game.dozenTotal;
+
+    return game;
+}
+
 
 init();
