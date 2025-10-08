@@ -444,6 +444,9 @@ function animate(timestamp, frame) {
                     if (bowController === controller) {
                         bowController = null;
                         if (bow && bow.userData.body) {
+                            // Reset velocities to prevent it from flying off from controller movement
+                            bow.userData.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+                            bow.userData.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
                             bow.userData.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
                         }
                     }
@@ -515,23 +518,30 @@ function animate(timestamp, frame) {
         arrowObject.nockPosition = clampedNockPosition;
     } else if (arrowObject) { arrowObject.nockPosition = null; }
     firedArrows.forEach(obj => {
-        if (obj.body && obj.body.isDynamic()) {
+        if (obj.body) {
+            // Always update the mesh from the physics body if it exists.
             obj.mesh.position.copy(obj.body.translation());
-            const velocity = obj.body.linvel();
-            const speed = Math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2);
-            if (speed > 0.1) {
-                const forward = arrowTemplate.userData.forward.clone();
-                const velocityDirection = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
-                const rotation = new THREE.Quaternion().setFromUnitVectors(forward, velocityDirection);
-                obj.mesh.quaternion.copy(rotation);
-                obj.body.setRotation(rotation, true);
+
+            // If the arrow is in flight (dynamic), make the mesh face its velocity vector for a realistic arc.
+            if (obj.body.isDynamic()) {
+                const velocity = obj.body.linvel();
+                const speed = Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2);
+
+                if (speed > 0.1) {
+                    const forward = arrowTemplate.userData.forward.clone();
+                    const velocityDirection = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
+                    const rotation = new THREE.Quaternion().setFromUnitVectors(forward, velocityDirection);
+                    obj.mesh.quaternion.copy(rotation);
+                } else {
+                    // If it's not moving fast (e.g., at the peak of its arc), just use the physics rotation.
+                    obj.mesh.quaternion.copy(obj.body.rotation());
+                }
             } else {
+                // If it's not dynamic (e.g., fixed on the floor or kinematic while being drawn), sync rotation directly.
                 obj.mesh.quaternion.copy(obj.body.rotation());
             }
-        } else if (obj.body) {
-            obj.mesh.position.copy(obj.body.translation());
-            obj.mesh.quaternion.copy(obj.body.rotation());
         }
+        // If obj.body is null, the arrow is stuck in the target and its transform is handled by its parent ring.
     });
     if (bow && bowstring) {
         const positions = bowstring.geometry.attributes.position.array;
