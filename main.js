@@ -235,6 +235,7 @@ async function placeScene(floorY) {
     const inspectionPos = new THREE.Vector3(0, floorY + 1.2, -3);
     target.position.copy(inspectionPos);
     target.rotation.y = Math.PI;
+    target.updateMatrixWorld(); // Ensure world matrix is up-to-date before creating physics bodies
 
     target.userData.originalPosition = new THREE.Vector3(0, floorY + 1.2, -10);
     target.userData.scoringPosition = inspectionPos;
@@ -242,15 +243,28 @@ async function placeScene(floorY) {
     target.userData.ringBodies = [];
 
     target.children.forEach(ring => {
-        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(target.position.x, target.position.y, target.position.z).setRotation(target.quaternion);
+        // Get the world position of the ring mesh
+        const worldPos = new THREE.Vector3();
+        ring.getWorldPosition(worldPos);
+        const worldQuat = new THREE.Quaternion();
+        ring.getWorldQuaternion(worldQuat);
+
+        // Create the physics body at the correct world position
+        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
+            .setTranslation(worldPos.x, worldPos.y, worldPos.z)
+            .setRotation(worldQuat);
         const ringBody = world.createRigidBody(ringBodyDesc);
         target.userData.ringBodies.push(ringBody);
+
         const vertices = ring.geometry.attributes.position.array;
         const indices = ring.geometry.index.array;
         const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices).setCollisionGroups(TARGET_GROUP_FILTER).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
         const collider = world.createCollider(colliderDesc, ringBody);
+
+        // Create the cyan debug mesh and parent it to the ring
         const debugMesh = new THREE.Mesh(ring.geometry, debugMaterial);
         ring.add(debugMesh);
+
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
         colliderToRawNameMap.set(collider.handle, ring.name);
@@ -386,11 +400,13 @@ function animate(timestamp, frame) {
             if (!arrow.contacts.includes(rawName)) {
                 arrow.contacts.push(rawName);
             }
-            arrow.hasScored = true;
-            if (arrow.body) {
-                target.attach(arrow.mesh);
-                world.removeRigidBody(arrow.body);
-                arrow.body = null;
+            if (!arrow.hasScored) {
+                arrow.hasScored = true;
+                if (arrow.body) {
+                    target.attach(arrow.mesh);
+                    world.removeRigidBody(arrow.body);
+                    arrow.body = null;
+                }
             }
         } else if (otherCollider?.userData?.type === 'floor') {
             if (arrow.hasScored) return;
