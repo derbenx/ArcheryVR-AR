@@ -324,19 +324,33 @@ async function placeScene(floorY) {
     target.userData.ringBodies = [];
 
     target.children.forEach(ring => {
-        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-            target.position.x, target.position.y, target.position.z
-        ).setRotation(target.quaternion);
-        const ringBody = world.createRigidBody(ringBodyDesc);
-        target.userData.ringBodies.push(ringBody);
-        const colliderDesc = RAPIER.ColliderDesc.trimesh(
-            ring.geometry.attributes.position.array,
-            ring.geometry.index.array
-        )
-        .setCollisionGroups(TARGET_GROUP_FILTER)
-        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+        // Create a single kinematic body for the entire target group.
+        // All colliders will be attached to this one body.
+        if (target.userData.ringBodies.length === 0) {
+             const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
+                target.position.x, target.position.y, target.position.z
+            ).setRotation(target.quaternion);
+            const ringBody = world.createRigidBody(ringBodyDesc);
+            target.userData.ringBodies.push(ringBody); // Storing one body, but in an array for consistency.
+        }
+        const targetBody = target.userData.ringBodies[0];
 
-        const collider = world.createCollider(colliderDesc, ringBody);
+
+        // --- Create Cylinder Collider from Ring's Bounding Box ---
+        ring.geometry.computeBoundingBox();
+        const bbox = ring.geometry.boundingBox;
+        const size = new THREE.Vector3();
+        bbox.getSize(size);
+
+        const radius = Math.max(size.x, size.y) / 2;
+        const height = 0.05; // A small height to approximate a flat target face
+
+        const colliderDesc = RAPIER.ColliderDesc.cylinder(height / 2, radius)
+            .setCollisionGroups(TARGET_GROUP_FILTER)
+            .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+
+        // The collider is attached to the single kinematic body of the target.
+        const collider = world.createCollider(colliderDesc, targetBody);
 
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
