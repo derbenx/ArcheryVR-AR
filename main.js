@@ -308,55 +308,44 @@ async function placeScene(floorY) {
     const floorCollider = world.createCollider(floorColliderDesc, floorBody);
     floorCollider.userData = { type: 'floor' };
 
+    // 1. Create the visual group and add the cloned meshes.
     target = new THREE.Group();
     gltf.scene.traverse(child => {
         if (child.isMesh && !isNaN(parseInt(child.name))) {
             target.add(child.clone());
         }
     });
-    target.position.set(0, floorY + 1.2, -10);
-    target.rotation.y = Math.PI;
+
+    // 2. Add the target to the scene WITHOUT applying any transformations.
+    // The positions are defined in the GLB file.
     scene.add(target);
 
-    target.userData.originalPosition = target.position.clone();
-    target.userData.scoringPosition = new THREE.Vector3(0, target.position.y, -3);
-    target.userData.inScoringPosition = false;
-    target.userData.ringBodies = [];
+    // 3. Create a single kinematic body for the target group, at the origin.
+    const targetBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased(); // Stays at origin
+    const targetBody = world.createRigidBody(targetBodyDesc);
 
+    // 4. Create colliders with LOCAL offsets matching the visual meshes.
     target.children.forEach(ring => {
-        // Create a single kinematic body for the entire target group.
-        // All colliders will be attached to this one body.
-        if (target.userData.ringBodies.length === 0) {
-             const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-                target.position.x, target.position.y, target.position.z
-            ).setRotation(target.quaternion);
-            const ringBody = world.createRigidBody(ringBodyDesc);
-            target.userData.ringBodies.push(ringBody); // Storing one body, but in an array for consistency.
-        }
-        const targetBody = target.userData.ringBodies[0];
+        const colliderDesc = RAPIER.ColliderDesc.trimesh(
+            ring.geometry.attributes.position.array,
+            ring.geometry.index.array
+        )
+        // Set the collider's local transform relative to the parent body.
+        .setTranslation(ring.position.x, ring.position.y, ring.position.z)
+        .setRotation(ring.quaternion)
+        .setCollisionGroups(TARGET_GROUP_FILTER)
+        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
 
-
-        // --- Create Cylinder Collider from Ring's Bounding Box ---
-        ring.geometry.computeBoundingBox();
-        const bbox = ring.geometry.boundingBox;
-        const size = new THREE.Vector3();
-        bbox.getSize(size);
-
-        const radius = Math.max(size.x, size.y) / 2;
-        const height = 0.05; // A small height to approximate a flat target face
-
-        const colliderDesc = RAPIER.ColliderDesc.cylinder(height / 2, radius)
-            .setCollisionGroups(TARGET_GROUP_FILTER)
-            .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-
-        // The collider is attached to the single kinematic body of the target.
         const collider = world.createCollider(colliderDesc, targetBody);
 
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
-
         collider.userData = { type: 'target', ringName: ring.name };
     });
+
+    // 5. Store the physics body for reference, but remove movement-related state.
+    target.userData.ringBodies = [targetBody];
+    target.userData.inScoringPosition = false;
 
     bow = gltf.scene.getObjectByName('bow');
     if (bow) {
@@ -559,20 +548,16 @@ function animate(timestamp, frame) {
     switch (gameState) {
         case GameState.PROCESSING_SCORE:
             processScores();
-            gameState = GameState.INSPECTING;
-            console.log("Transitioning to INSPECTING state.");
+            // Since the target no longer moves, we can go directly to resetting
+            // or waiting for the user to initiate the next round.
+            // For now, we'll just wait for the 'A' button press.
+            gameState = GameState.INSPECTING; // Keep state for button logic
+            console.log("Scores processed. Ready for next round.");
             break;
 
         case GameState.INSPECTING:
-            if (target && !target.userData.inScoringPosition) {
-                target.userData.inScoringPosition = true;
-                // Move the visual group first, then sync physics bodies to it.
-                target.position.copy(target.userData.scoringPosition);
-                target.userData.ringBodies.forEach(body => {
-                    body.setNextKinematicTranslation(target.position, true);
-                    body.setNextKinematicRotation(target.quaternion, true);
-                });
-            }
+            // Target no longer moves, so this state is now just a waiting period
+            // for the user to press the 'A' button to start the next round.
             break;
 
         case GameState.RESETTING:
@@ -784,16 +769,7 @@ function cleanupRound() {
     });
     currentRoundArrows = []; // Clear the temporary array
 
-    // Reset target position - REMOVED so target stays in the inspection position.
-    // if (target) {
-    //     target.userData.inScoringPosition = false;
-    //     // Move the visual group first, then sync physics bodies to it.
-    //     target.position.copy(target.userData.originalPosition);
-    //     target.userData.ringBodies.forEach(body => {
-    //         body.setNextKinematicTranslation(target.position, true);
-    //         body.setNextKinematicRotation(target.quaternion, true);
-    //     });
-    // }
+    // The target's position is no longer reset. This block is now empty.
 
     // After 12 arrows are scored, finalize the game
     if (currentGame.scores.length >= 12) {
