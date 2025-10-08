@@ -152,8 +152,8 @@ let gameHistory = [], currentGame = null, runningTotal = 0, viewingGameIndex = -
 const GameState = { SHOOTING: 'shooting', PROCESSING_SCORE: 'processing_score', INSPECTING: 'inspecting', RESETTING: 'resetting' };
 let gameState = GameState.SHOOTING;
 let scoreboard, distanceMenu, colliderToScoreMap;
-const distanceOptions = [1, 2, 5, 10, 15, 20];
-let currentDistanceIndex = 0; // Default to 1m
+const distanceOptions = [3, 6, 10, 15, 20, 30, 40, 50];
+let currentDistanceIndex = 2; // Default to 10m
 let isMenuOpen = false;
 let bowController = null, arrowController = null, sceneSetupInitiated = false;
 let aButtonPressed = [false, false], menuButtonPressed = [false, false], joystickMoved = [false, false];
@@ -356,7 +356,8 @@ function animate(timestamp, frame) {
         }
     }
     if (world) world.step(eventQueue);
-    const collisionsThisFrame = new Map();
+
+    // Simplified collision handling based on reference
     eventQueue.drainCollisionEvents((handle1, handle2, started) => {
         if (!started) return;
         const collider1 = world.getCollider(handle1);
@@ -366,43 +367,27 @@ function animate(timestamp, frame) {
         else if (collider2?.userData?.type === 'arrow') { arrow = collider2.userData.arrow; otherCollider = collider1; }
         else { return; }
         if (arrow.hasScored) return;
-        if (!collisionsThisFrame.has(arrow)) { collisionsThisFrame.set(arrow, []); }
-        collisionsThisFrame.get(arrow).push(otherCollider);
-    });
-    collisionsThisFrame.forEach((colliders, arrow) => {
-        if (arrow.hasScored) return;
-        let highestScore = 'M', highestScoreValue = 0, hitObjectNames = [], hitTarget = false, highestScoringRingName = null;
-        const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
-        colliders.forEach(otherCollider => {
-            if (otherCollider?.userData?.type === 'target') {
-                hitTarget = true;
-                const ringName = otherCollider.userData.ringName || 'unknown';
-                hitObjectNames.push(ringName);
-                const currentScore = colliderToScoreMap.get(otherCollider.handle);
-                const currentScoreValue = scoreValueForSort(currentScore);
-                if (currentScoreValue > highestScoreValue) {
-                    highestScoreValue = currentScoreValue;
-                    highestScore = currentScore;
-                    highestScoringRingName = ringName;
-                }
-            } else if (otherCollider?.userData?.type === 'floor') {
-                hitObjectNames.push('floor');
-            }
-        });
-        logHit(hitObjectNames.join(', '), highestScore);
-        arrow.score = highestScore;
-        arrow.hasScored = true;
-        if (hitTarget) {
+
+        if (otherCollider?.userData?.type === 'target') {
+            arrow.hasScored = true;
+            const scoreValue = colliderToScoreMap.get(otherCollider.handle);
+            arrow.score = scoreValue;
+            logHit(otherCollider.userData.ringName, scoreValue);
             if (arrow.body) {
-                const ringToAttach = target.children.find(child => child.name === highestScoringRingName);
-                if (ringToAttach) { ringToAttach.attach(arrow.mesh); } else { target.attach(arrow.mesh); }
+                target.attach(arrow.mesh); // Attach to main target group for stability
                 world.removeRigidBody(arrow.body);
                 arrow.body = null;
             }
-        } else {
-            if (arrow.body) { arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed); }
+        } else if (otherCollider?.userData?.type === 'floor') {
+            arrow.hasScored = true;
+            arrow.score = 'M';
+            logHit('floor', 'M');
+            if (arrow.body) {
+                arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
+            }
         }
     });
+
     if (gameState === GameState.SHOOTING) {
         const roundSize = 3;
         const currentRoundStartIndex = currentGame.scores.length;
@@ -444,7 +429,6 @@ function animate(timestamp, frame) {
                     if (bowController === controller) {
                         bowController = null;
                         if (bow && bow.userData.body) {
-                            // Reset velocities to prevent it from flying off from controller movement
                             bow.userData.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
                             bow.userData.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
                             bow.userData.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
@@ -517,32 +501,15 @@ function animate(timestamp, frame) {
         body.setNextKinematicRotation(mesh.quaternion);
         arrowObject.nockPosition = clampedNockPosition;
     } else if (arrowObject) { arrowObject.nockPosition = null; }
+
+    // Simplified arrow update loop from reference
     firedArrows.forEach(obj => {
         if (obj.body) {
-            // Always update the mesh from the physics body if it exists.
             obj.mesh.position.copy(obj.body.translation());
-
-            // If the arrow is in flight (dynamic), make the mesh face its velocity vector for a realistic arc.
-            if (obj.body.isDynamic()) {
-                const velocity = obj.body.linvel();
-                const speed = Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2);
-
-                if (speed > 0.1) {
-                    const forward = arrowTemplate.userData.forward.clone();
-                    const velocityDirection = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
-                    const rotation = new THREE.Quaternion().setFromUnitVectors(forward, velocityDirection);
-                    obj.mesh.quaternion.copy(rotation);
-                } else {
-                    // If it's not moving fast (e.g., at the peak of its arc), just use the physics rotation.
-                    obj.mesh.quaternion.copy(obj.body.rotation());
-                }
-            } else {
-                // If it's not dynamic (e.g., fixed on the floor or kinematic while being drawn), sync rotation directly.
-                obj.mesh.quaternion.copy(obj.body.rotation());
-            }
+            obj.mesh.quaternion.copy(obj.body.rotation());
         }
-        // If obj.body is null, the arrow is stuck in the target and its transform is handled by its parent ring.
     });
+
     if (bow && bowstring) {
         const positions = bowstring.geometry.attributes.position.array;
         const topPointWorld = bow.userData.top.clone().applyMatrix4(bow.matrixWorld);
@@ -599,21 +566,13 @@ function cleanupRound() {
 
 function moveTargetToDistance(distance) {
     if (!target || !target.userData.originalPosition) return;
-
     const newStartPosition = new THREE.Vector3(0, target.userData.originalPosition.y, -distance);
-
-    // Update the stored positions for game logic
     target.userData.originalPosition.copy(newStartPosition);
-    // Ensure the scoring position is relative to the new start position's height, but at a fixed close distance
     target.userData.scoringPosition.set(0, newStartPosition.y, -3);
-
-    // Immediately move both the visual mesh and the physics body
     target.position.copy(newStartPosition);
     target.userData.ringBodies.forEach(body => {
         body.setTranslation(newStartPosition, true);
     });
-
-    // Reset the inspection flag as we are moving to a new shooting position
     target.userData.inScoringPosition = false;
 }
 
