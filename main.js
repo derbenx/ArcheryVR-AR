@@ -380,18 +380,17 @@ function animate(timestamp, frame) {
         } else { return; }
 
         if (otherCollider?.userData?.type === 'target') {
+            if (arrow.score === 'M') return;
             const rawName = colliderToRawNameMap.get(otherCollider.handle);
             logToServer(`Arrow Contact: Ring ${rawName}`);
             if (!arrow.contacts.includes(rawName)) {
                 arrow.contacts.push(rawName);
             }
-            if (!arrow.hasScored) {
-                arrow.hasScored = true;
-                if (arrow.body) {
-                    target.attach(arrow.mesh);
-                    world.removeRigidBody(arrow.body);
-                    arrow.body = null;
-                }
+            arrow.hasScored = true;
+            if (arrow.body) {
+                target.attach(arrow.mesh);
+                world.removeRigidBody(arrow.body);
+                arrow.body = null;
             }
         } else if (otherCollider?.userData?.type === 'floor') {
             if (arrow.hasScored) return;
@@ -565,10 +564,9 @@ function processScores() {
     logToServer(`Processing arrows. Arrow 1 contacts: [${currentRoundArrows[0].contacts.join(', ')}], Arrow 2 contacts: [${currentRoundArrows[1].contacts.join(', ')}], Arrow 3 contacts: [${currentRoundArrows[2].contacts.join(', ')}]`);
 
     const finalScores = currentRoundArrows.map(arrow => {
-        if (arrow.score === 'M') return 'M'; // It hit the floor
-        if (arrow.contacts.length === 0) return 'M'; // It hit nothing
+        if (arrow.score === 'M') return 'M';
+        if (arrow.contacts.length === 0) return 'M';
 
-        // Line-breaker logic: find the highest value in the contacts list
         let highestScore = 0;
         arrow.contacts.forEach(contact => {
             const scoreVal = parseInt(contact, 10);
@@ -583,10 +581,9 @@ function processScores() {
     });
 
     logToServer(`Final scores after line-breaker: ${JSON.stringify(finalScores)}`);
-    last3HitsRaw = finalScores; // Update debug display with chosen scores
+    last3HitsRaw = finalScores;
     updateDebugDisplay();
 
-    // Sort scores for display on the main scoreboard
     const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
     finalScores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
     logToServer(`Scores after sorting for scoreboard: ${JSON.stringify(finalScores)}`);
