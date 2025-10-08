@@ -30,12 +30,14 @@ let bow, target, bowstring;
 let arrowTemplate;
 let arrowObject = null;
 let firedArrows = [];
+let currentRoundArrows = []; // Holds the 3 arrows currently being processed
 
 // --- Game State ---
 const GameState = {
     SHOOTING: 'shooting',
-    INSPECTING: 'inspecting', // Target is close for inspection
-    ROUND_OVER: 'round_over'  // Round is over, processing score
+    PROCESSING_SCORE: 'processing_score',
+    INSPECTING: 'inspecting',
+    RESETTING: 'resetting'
 };
 let gameState = GameState.SHOOTING;
 
@@ -272,8 +274,8 @@ function shootArrow() {
     firedArrows.push(arrowObject);
 
     if (firedArrows.length % 3 === 0) {
-        gameState = GameState.INSPECTING;
-        console.log("Entering INSPECTING state.");
+        gameState = GameState.PROCESSING_SCORE;
+        console.log("Entering PROCESSING_SCORE state.");
     }
 
     arrowObject = null;
@@ -379,15 +381,28 @@ function animate(timestamp, frame) {
         target.quaternion.copy(target.userData.ringBodies[0].rotation());
     }
 
-    // State machine for game flow
-    if (gameState === GameState.INSPECTING) {
-        if (target && !target.userData.inScoringPosition) {
-            target.userData.inScoringPosition = true;
-            target.userData.ringBodies.forEach(body => {
-                body.setNextKinematicTranslation(target.userData.scoringPosition, true);
-            });
-        }
+    // --- Game State Machine ---
+    switch (gameState) {
+        case GameState.PROCESSING_SCORE:
+            processScores();
+            gameState = GameState.INSPECTING;
+            console.log("Transitioning to INSPECTING state.");
+            break;
+
+        case GameState.INSPECTING:
+            if (target && !target.userData.inScoringPosition) {
+                target.userData.inScoringPosition = true;
+                target.userData.ringBodies.forEach(body => {
+                    body.setNextKinematicTranslation(target.userData.scoringPosition, true);
+                });
+            }
+            break;
+
+        case GameState.RESETTING:
+            // This state will be handled by the button press logic below
+            break;
     }
+
 
     if (renderer.xr.isPresenting) {
         for (let i = 0; i < 2; i++) {
@@ -404,8 +419,8 @@ function animate(timestamp, frame) {
                 if (gameState === GameState.INSPECTING && controller.gamepad.buttons[4] && controller.gamepad.buttons[4].pressed) {
                     if (!aButtonPressed[i]) {
                         aButtonPressed[i] = true;
-                        gameState = GameState.ROUND_OVER;
-                        console.log("Entering ROUND_OVER state, processing scores.");
+                        gameState = GameState.RESETTING;
+                        console.log("Entering RESETTING state.");
                     }
                 } else {
                     aButtonPressed[i] = false;
@@ -414,9 +429,8 @@ function animate(timestamp, frame) {
         }
     }
 
-    // Process the round end and immediately transition back to shooting
-    if (gameState === GameState.ROUND_OVER) {
-        processEnd();
+    if (gameState === GameState.RESETTING) {
+        cleanupRound();
         gameState = GameState.SHOOTING;
         console.log("Returning to SHOOTING state.");
     }
@@ -498,33 +512,38 @@ function animate(timestamp, frame) {
     renderer.render(scene, camera);
 }
 
-function processEnd() {
+function processScores() {
     const roundSize = 3;
-    if (firedArrows.length < roundSize) {
+    const startIndex = scoreboard.scores.length;
+    if (firedArrows.length < startIndex + roundSize) {
         return;
     }
 
-    const arrowsToScore = firedArrows.slice(-roundSize);
+    // Identify and store the arrows for the current round
+    currentRoundArrows = firedArrows.slice(startIndex, startIndex + roundSize);
 
-    const scores = arrowsToScore.map(arrow => arrow.score || 'M');
+    const scores = currentRoundArrows.map(arrow => arrow.score || 'M');
     const scoreValueForSort = (s) => {
-        if (s === 'X') return 11;
+        if (s === 'X') return 11; // Sort 'X' as highest
         if (s === 'M') return 0;
         return parseInt(s, 10);
     };
     scores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
 
     scoreboard.updateScores(scores);
+}
 
-    arrowsToScore.forEach(obj => {
+function cleanupRound() {
+    // Clean up the arrows from the round that was just inspected
+    currentRoundArrows.forEach(obj => {
         if (obj.mesh) obj.mesh.removeFromParent();
         if (obj.body) {
             try { world.removeRigidBody(obj.body); } catch (e) {}
         }
     });
+    currentRoundArrows = []; // Clear the temporary array
 
-    firedArrows.splice(-roundSize);
-
+    // Reset target position
     if (target) {
         target.userData.inScoringPosition = false;
         target.userData.ringBodies.forEach(body => {
@@ -532,9 +551,11 @@ function processEnd() {
         });
     }
 
-    if (scoreboard.scores.length >= 6) {
-        console.log("Full game finished. Ready for a new one.");
+    // After 12 arrows are scored, reset the board and the master arrow list for a new game
+    if (scoreboard.scores.length >= 12) {
+        console.log("Full 12-shot game finished. Ready for a new one.");
         scoreboard.reset();
+        firedArrows = []; // Clear the master list for the new game
     }
 }
 
