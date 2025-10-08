@@ -179,6 +179,7 @@ let gameState = GameState.SHOOTING;
 let scoreboard;
 let eventQueue;
 let colliderToScoreMap;
+let colliderToRawNameMap; // For debug display
 
 // --- Controller and State ---
 let bowController = null;
