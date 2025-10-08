@@ -329,17 +329,9 @@ async function placeScene(floorY) {
     floorCollider.userData = { type: 'floor' };
 
     target = new THREE.Group();
-    scene.add(target); // Add the main group to the scene
+    scene.add(target);
 
-    // Define the center points for the original and scoring positions
-    const originalCenter = new THREE.Vector3(0, floorY + 2.5, -5);
-    const scoringCenter = new THREE.Vector3(0, floorY + 2.5, -3);
-
-    target.position.copy(originalCenter);
-    target.userData.originalPosition = originalCenter;
-    target.userData.scoringPosition = scoringCenter;
     target.userData.inScoringPosition = false;
-    target.userData.ringBodies = []; // Still useful to have a list of all bodies
 
     // Collect all ring meshes from the loaded model
     const allRings = [];
@@ -349,39 +341,39 @@ async function placeScene(floorY) {
         }
     });
 
-    // Sort rings by score value, descending (11, 10, 9...)
+    // Sort rings by score value, descending (11, 10, 9...) to control layout
     allRings.sort((a, b) => parseInt(b.name) - parseInt(a.name));
 
-    // Lay them out in a tree formation
+    // Define layout parameters
     const ySpacing = 0.45;
     const xSpacing = 0.5;
+    const startY = floorY + 2.5;
+    const startZ = -5;
+
     allRings.forEach((ring, i) => {
         const ringClone = ring.clone();
 
-        // Position them locally within the target group
-        const yPos = -i * ySpacing;
-        // Arrange in a V-shape
+        // 1. Calculate the absolute world position for this ring
+        const yPos = startY - (i * ySpacing);
         const xPos = (i % 2 === 0 ? -1 : 1) * xSpacing * Math.floor((i + 1) / 2);
-        ringClone.position.set(xPos, yPos, 0);
-        target.add(ringClone); // Add to the group
+        const worldPos = new THREE.Vector3(xPos, yPos, startZ);
+
+        // Store original and scoring positions on the mesh itself
+        ringClone.userData.originalPosition = worldPos.clone();
+        ringClone.userData.scoringPosition = worldPos.clone().setZ(startZ + 2);
+
+        // 2. Set the visual mesh's position to the calculated world position
+        ringClone.position.copy(worldPos);
+        target.add(ringClone);
 
         // Store original material for debug mode
         originalMaterials.set(ringClone.uuid, ringClone.material);
 
-        // Get the world position for the physics body
-        const worldPos = new THREE.Vector3();
-        ringClone.getWorldPosition(worldPos);
-        const worldQuat = new THREE.Quaternion();
-        ringClone.getWorldQuaternion(worldQuat);
-
+        // 3. Create the physics body at the exact same world position
         const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased()
-            .setTranslation(worldPos.x, worldPos.y, worldPos.z)
-            .setRotation(worldQuat);
+            .setTranslation(worldPos.x, worldPos.y, worldPos.z);
         const ringBody = world.createRigidBody(ringBodyDesc);
-
-        // Associate body with mesh for easier updates later
-        ringClone.userData.physicsBody = ringBody;
-        target.userData.ringBodies.push(ringBody);
+        ringClone.userData.physicsBody = ringBody; // Link body to mesh
 
         const colliderDesc = RAPIER.ColliderDesc.trimesh(
             ringClone.geometry.attributes.position.array,
@@ -389,13 +381,11 @@ async function placeScene(floorY) {
         )
         .setCollisionGroups(TARGET_GROUP_FILTER)
         .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-
         const collider = world.createCollider(colliderDesc, ringBody);
 
         let scoreValue = ring.name === '11' ? 'X' : ring.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
         colliderToRawNameMap.set(collider.handle, ring.name);
-
         collider.userData = { type: 'target' };
     });
 
@@ -610,20 +600,13 @@ function animate(timestamp, frame) {
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
                 target.userData.inScoringPosition = true;
-                // Move the parent group to the scoring position
-                target.position.copy(target.userData.scoringPosition);
-
-                // Update each physics body to match its corresponding mesh's new world position
+                // Move each ring (visual and physics) to its scoring position
                 target.children.forEach(ringMesh => {
                     if (ringMesh.userData.physicsBody) {
                         const body = ringMesh.userData.physicsBody;
-                        const newWorldPos = new THREE.Vector3();
-                        ringMesh.getWorldPosition(newWorldPos);
-                        body.setNextKinematicTranslation(newWorldPos, true);
-
-                        const newWorldQuat = new THREE.Quaternion();
-                        ringMesh.getWorldQuaternion(newWorldQuat);
-                        body.setNextKinematicRotation(newWorldQuat, true);
+                        const scoringPos = ringMesh.userData.scoringPosition;
+                        ringMesh.position.copy(scoringPos); // Move visual mesh
+                        body.setNextKinematicTranslation(scoringPos, true); // Move physics body
                     }
                 });
             }
@@ -832,20 +815,13 @@ function cleanupRound() {
     // Reset target position
     if (target) {
         target.userData.inScoringPosition = false;
-        // Move the parent group back to its original position
-        target.position.copy(target.userData.originalPosition);
-
-        // Update each physics body to match its corresponding mesh's new world position
+        // Move each ring (visual and physics) back to its original position
         target.children.forEach(ringMesh => {
             if (ringMesh.userData.physicsBody) {
                 const body = ringMesh.userData.physicsBody;
-                const newWorldPos = new THREE.Vector3();
-                ringMesh.getWorldPosition(newWorldPos);
-                body.setNextKinematicTranslation(newWorldPos, true);
-
-                const newWorldQuat = new THREE.Quaternion();
-                ringMesh.getWorldQuaternion(newWorldQuat);
-                body.setNextKinematicRotation(newWorldQuat, true);
+                const originalPos = ringMesh.userData.originalPosition;
+                ringMesh.position.copy(originalPos); // Move visual mesh
+                body.setNextKinematicTranslation(originalPos, true); // Move physics body
             }
         });
     }
