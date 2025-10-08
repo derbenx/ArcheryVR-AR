@@ -418,10 +418,7 @@ function shootArrow() {
 
     firedArrows.push(arrowObject);
 
-    if (firedArrows.length % 3 === 0) {
-        gameState = GameState.PROCESSING_SCORE;
-        console.log("Entering PROCESSING_SCORE state.");
-    }
+    // State transition is now handled in the animate loop once all arrows have landed.
 
     arrowObject = null;
     arrowController = null;
@@ -519,6 +516,29 @@ function animate(timestamp, frame) {
     });
 
     // --- Game State Machine ---
+
+    // Check if the current round is over and ready for scoring
+    if (gameState === GameState.SHOOTING) {
+        const roundSize = 3;
+        // Determine the start index of the arrows for the current round
+        const currentRoundStartIndex = currentGame.scores.length;
+        const expectedArrowCount = currentRoundStartIndex + roundSize;
+
+        // Only proceed if enough arrows for the current round have been fired
+        if (firedArrows.length >= expectedArrowCount) {
+            // Get the specific arrows for this round
+            const roundArrows = firedArrows.slice(currentRoundStartIndex, expectedArrowCount);
+
+            // Check if all of them have landed by checking their `hasScored` flag
+            const allLanded = roundArrows.every(arrow => arrow.hasScored);
+
+            if (allLanded) {
+                gameState = GameState.PROCESSING_SCORE;
+                console.log(`Round ${currentGame.scores.length / 3 + 1} complete, all arrows landed. Processing scores.`);
+            }
+        }
+    }
+
     switch (gameState) {
         case GameState.PROCESSING_SCORE:
             processScores();
