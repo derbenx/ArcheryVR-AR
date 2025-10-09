@@ -10,22 +10,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['filesToDelete'])) {
     if (is_array($files_to_delete)) {
         foreach ($files_to_delete as $filename) {
             // --- Security Check ---
-            // Sanitize the filename to prevent directory traversal attacks.
-            // basename() removes any directory information, ensuring we only have the filename.
             $safe_filename = basename($filename);
             $file_path = $target_dir . $safe_filename;
 
-            // Double-check that the resolved path is still within our target directory.
-            // realpath() resolves all symbolic links, '..' and '.' dots.
             if (realpath($file_path) && strpos(realpath($file_path), realpath($target_dir)) === 0) {
-                // Check if the file exists and is a file before trying to delete it
                 if (is_file($file_path)) {
-                    unlink($file_path); // Delete the file
+                    unlink($file_path);
                 }
             }
         }
     }
-    // No need for a redirect, the script will just continue and render the updated file list below.
+}
+
+// Helper function to format bytes into a human-readable format
+function formatSizeUnits($bytes) {
+    if ($bytes >= 1073741824) {
+        $bytes = number_format($bytes / 1073741824, 2) . ' GB';
+    } elseif ($bytes >= 1048576) {
+        $bytes = number_format($bytes / 1048576, 2) . ' MB';
+    } elseif ($bytes >= 1024) {
+        $bytes = number_format($bytes / 1024, 2) . ' KB';
+    } elseif ($bytes > 1) {
+        $bytes = $bytes . ' bytes';
+    } elseif ($bytes == 1) {
+        $bytes = $bytes . ' byte';
+    } else {
+        $bytes = '0 bytes';
+    }
+    return $bytes;
 }
 ?>
 <!DOCTYPE html>
@@ -38,6 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['filesToDelete'])) {
         li { margin: 8px 0; display: flex; align-items: center; }
         a { text-decoration: none; color: #007bff; margin-left: 10px;}
         a:hover { text-decoration: underline; }
+        .filesize { color: #6c757d; margin-left: 1em; font-size: 0.9em; }
         input[type="checkbox"] { margin-right: 10px; }
         input[type="submit"] { margin-top: 1em; padding: 8px 15px; border: none; cursor: pointer; }
         .delete-btn { background-color: #dc3545; color: white; }
@@ -55,25 +68,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['filesToDelete'])) {
             <?php
             // Check if the directory exists
             if (is_dir($target_dir)) {
-                // Scan the directory for files
                 $files = scandir($target_dir);
-
-                // Filter out '.' and '..' from the list
                 $files = array_diff($files, array('.', '..'));
 
                 if (empty($files)) {
                     echo "<li>No files found.</li>";
                 } else {
-                    // Loop through the files and create a list item with a checkbox and a link for each
                     foreach ($files as $file) {
                         $full_path = $target_dir . $file;
                         $link_path = $target_dir . htmlspecialchars($file);
-                        // Append the file's last modification time as a cache-busting query string
                         $version = filemtime($full_path);
+                        $size = formatSizeUnits(filesize($full_path));
 
                         echo "<li>";
                         echo "<input type='checkbox' name='filesToDelete[]' value='" . htmlspecialchars($file) . "'>";
                         echo "<a href=\"$link_path?v=$version\">" . htmlspecialchars($file) . "</a>";
+                        echo "<span class='filesize'>($size)</span>";
                         echo "</li>";
                     }
                 }

@@ -381,42 +381,26 @@ function onSelectStart(event) {
     }
 
     if (bowController && controller !== bowController) {
-        arrowController = controller; // Set arrow controller immediately.
-
         // Only allow drawing a new arrow if in SHOOTING state and menu is closed
         if (gameState === GameState.SHOOTING && !arrowObject && !isMenuOpen) {
             if (!arrowTemplate) return;
 
             const newArrowMesh = arrowTemplate.clone();
             newArrowMesh.visible = true;
-
-            // 1. Rotate the arrow to point forward relative to the controller's grip.
-            const targetForward = new THREE.Vector3(0, 0, -1); // Controller's local forward.
-            const sourceForward = arrowTemplate.userData.forward.clone();
-            const rotation = new THREE.Quaternion().setFromUnitVectors(sourceForward, targetForward);
-            newArrowMesh.quaternion.copy(rotation);
-
-            // 2. Position the arrow so the nock is at the controller's origin.
-            // This makes it look like the user is holding it by the nock.
-            const nockOffset = arrowTemplate.userData.nock.clone();
-            nockOffset.applyQuaternion(rotation); // Rotate the offset to match the new orientation.
-            newArrowMesh.position.sub(nockOffset);
-
-            // Attach the arrow to the controller's grip space, not the controller's pointing space.
-            const arrowGrip = renderer.xr.getControllerGrip(arrowController.userData.id);
-            arrowGrip.add(newArrowMesh);
+            scene.add(newArrowMesh);
 
             const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
             const body = world.createRigidBody(arrowBodyDesc);
-            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length / 2)
+            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length / 2) // Rapier cuboids are half-extents
                 .setMass(0.1)
                 .setCollisionGroups(ARROW_GROUP_FILTER)
                 .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
             const collider = world.createCollider(colliderDesc, body);
 
-            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false, score: 'M', isNocked: false }; // Add isNocked state
+            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false, score: 'M' }; // Default score is Miss
             collider.userData = { type: 'arrow', arrow: arrowObject };
         }
+        arrowController = controller;
     }
 }
 
