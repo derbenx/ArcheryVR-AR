@@ -397,11 +397,14 @@ function onSelectStart(event) {
             newArrowMesh.quaternion.copy(rotation);
 
             // 2. Position the arrow so the nock is at the controller's origin.
+            // This makes it look like the user is holding it by the nock.
             const nockOffset = arrowTemplate.userData.nock.clone();
             nockOffset.applyQuaternion(rotation); // Rotate the offset to match the new orientation.
             newArrowMesh.position.sub(nockOffset);
 
-            arrowController.add(newArrowMesh); // Attach arrow to the controller's grip.
+            // Attach the arrow to the controller's grip space, not the controller's pointing space.
+            const arrowGrip = renderer.xr.getControllerGrip(arrowController.userData.id);
+            arrowGrip.add(newArrowMesh);
 
             const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
             const body = world.createRigidBody(arrowBodyDesc);
@@ -418,17 +421,8 @@ function onSelectStart(event) {
 }
 
 function onSelectEnd(event) {
-    if (arrowController === event.target && arrowObject) {
-        if (arrowObject.isNocked) {
-            shootArrow();
-        } else {
-            // If the arrow isn't nocked when the trigger is released, destroy it.
-            console.log("Arrow not nocked, cancelling shot.");
-            if (arrowObject.mesh) arrowObject.mesh.removeFromParent();
-            if (arrowObject.body) world.removeRigidBody(arrowObject.body);
-            arrowObject = null;
-            arrowController = null;
-        }
+    if (arrowController === event.target) {
+        shootArrow();
     }
 }
 
@@ -532,33 +526,29 @@ async function placeScene(floorY) {
 }
 
 function shootArrow() {
-    // Ensure the arrow is nocked and ready to be shot. This check is critical.
-    if (!bowController || !arrowController || !arrowObject || !arrowObject.body || !arrowObject.isNocked) return;
+    if (!bowController || !arrowController || !arrowObject || !arrowObject.body) return;
 
-    const { mesh, body, drawDistance } = arrowObject;
+    const { mesh, body } = arrowObject;
 
-    // Finalize the physics body's position and rotation to match the visual mesh just before firing.
-    // This prevents any visual "jump" on release.
     body.setTranslation(mesh.position, true);
     body.setRotation(mesh.quaternion, true);
     body.setBodyType(RAPIER.RigidBodyType.Dynamic);
 
-    // Calculate power based on the clamped and projected draw distance from the drawing logic.
-    const drawRatio = (drawDistance || 0) / arrowTemplate.userData.length;
-    const power = Math.pow(drawRatio, 1.5); // Exponential curve for realistic power.
-    const maxSpeed = 40;
-    const speed = power * maxSpeed;
+    const arrowHand = renderer.xr.getController(arrowController.userData.id);
+    const bowHand = renderer.xr.getController(bowController.userData.id);
 
-    // The arrow should fly straight out from the bow's stable forward direction, not the hand's.
-    // This is the key fix for the "dropping arrows" bug.
-    const shootDirection = new THREE.Vector3();
-    bow.getWorldDirection(shootDirection);
+    const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
+    const drawDistance = Math.min(arrowHand.position.distanceTo(bowHand.position), arrowTemplate.userData.length);
+    const drawRatio = drawDistance / arrowTemplate.userData.length;
+    const maxSpeed = 30;
+    const speed = drawRatio * maxSpeed;
 
-    body.setLinvel(shootDirection.multiplyScalar(speed), true);
+    body.setLinvel(worldDirection.multiplyScalar(speed), true);
 
     firedArrows.push(arrowObject);
 
-    // Clean up current arrow state.
+    // State transition is now handled in the animate loop once all arrows have landed.
+
     arrowObject = null;
     arrowController = null;
 }
@@ -823,84 +813,39 @@ function animate(timestamp, frame) {
         bow.quaternion.copy(finalRotation);
     }
 
-    if (arrowController && arrowObject && bowController) {
-        const { mesh, body: arrowBody, isNocked } = arrowObject;
-        const { nock: localNock, forward: localForward, length: arrowLength } = arrowTemplate.userData;
+    if (arrowController && arrowObject && arrowObject.body && bowController) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
+        const bowHand = renderer.xr.getController(bowController.userData.id);
+        const arrowBody = arrowObject.body;
+        const mesh = arrowObject.mesh;
+        const { forward: localForward, nock: localNock, length: arrowLength } = arrowTemplate.userData;
 
-        if (!isNocked) {
-            // --- NOCKING LOGIC ---
-            // The nock's world position is the same as the controller's world position because of the initial offset.
-            const nockWorldPosition = new THREE.Vector3();
-            arrowHand.getWorldPosition(nockWorldPosition);
+        // 1. Calculate the direction from the drawing hand to the bow hand.
+        const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position);
+        const drawDistance = worldDirection.length();
+        worldDirection.normalize();
 
-            const topPointWorld = bow.userData.top.clone().applyMatrix4(bow.matrixWorld);
-            const bottomPointWorld = bow.userData.bottom.clone().applyMatrix4(bow.matrixWorld);
-            const bowstringCenter = new THREE.Vector3().addVectors(topPointWorld, bottomPointWorld).multiplyScalar(0.5);
+        // 2. Create the rotation to align the arrow model with this world direction.
+        const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
+        mesh.quaternion.copy(rotation);
 
-            if (nockWorldPosition.distanceTo(bowstringCenter) < 0.06) { // 6cm nocking threshold
-                arrowObject.isNocked = true;
-                console.log("Arrow nocked!");
+        // 3. Calculate the offset from the model's origin to its nock, in world space.
+        const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
 
-                // Re-parent from controller to scene, preserving world transform to prevent visual jumps.
-                const worldPos = new THREE.Vector3();
-                const worldQuat = new THREE.Quaternion();
-                mesh.getWorldPosition(worldPos);
-                mesh.getWorldQuaternion(worldQuat);
-                scene.add(mesh); // Re-parent
-                mesh.position.copy(worldPos);
-                mesh.quaternion.copy(worldQuat);
-            }
-        } else {
-            // --- DRAWING LOGIC (Freer motion with clamp) ---
-            const bowHand = renderer.xr.getController(bowController.userData.id);
-            const handPos = arrowHand.position;
+        // 4. Calculate the clamped position for the nock.
+        const clampedDrawDistance = Math.min(drawDistance, arrowLength);
+        const clampedNockPosition = new THREE.Vector3().copy(bowHand.position).sub(worldDirection.clone().multiplyScalar(clampedDrawDistance));
 
-            // Define the bowstring plane using the bow's forward vector.
-            const bowFrontVector = new THREE.Vector3().setFromMatrixColumn(bow.matrixWorld, 2).normalize();
-            const bowstringCenter = new THREE.Vector3().addVectors(bow.userData.top, bow.userData.bottom).multiplyScalar(0.5).applyMatrix4(bow.matrixWorld);
-            const bowstringPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(bowFrontVector, bowstringCenter);
+        // 5. Set the arrow's final position.
+        mesh.position.copy(clampedNockPosition).sub(rotatedNockOffset);
 
-            // Get the signed distance from the hand to the plane.
-            const distanceToPlane = bowstringPlane.distanceToPoint(handPos);
+        // 6. Update the physics body.
+        arrowBody.setNextKinematicTranslation(mesh.position);
+        arrowBody.setNextKinematicRotation(mesh.quaternion);
 
-            let nockPosition;
-            let drawDistance;
+        // Store the clamped nock position for the bowstring visual.
+        arrowObject.nockPosition = clampedNockPosition;
 
-            if (distanceToPlane > 0) {
-                // Hand is in front of the bow, so clamp the nock's position to the plane.
-                nockPosition = bowstringPlane.projectPoint(handPos, new THREE.Vector3());
-                drawDistance = 0;
-            } else {
-                // Hand is behind the bow, so let it move freely with the hand.
-                nockPosition = handPos.clone();
-                // Draw distance is the perpendicular distance from the hand to the plane.
-                drawDistance = -distanceToPlane;
-            }
-
-            // Clamp the maximum draw distance to the arrow's length.
-            const clampedDrawDistance = Math.min(drawDistance, arrowLength);
-            arrowObject.drawDistance = clampedDrawDistance; // Store for shooting.
-
-            // If clamped by max length, we need to adjust the nock position to reflect the max draw.
-            if (drawDistance > arrowLength) {
-                nockPosition = bowstringCenter.clone().add(bowFrontVector.clone().negate().multiplyScalar(arrowLength));
-            }
-
-            // Align arrow to point from the nock to the bow's center for aiming.
-            const aimDirection = new THREE.Vector3().subVectors(bowHand.position, nockPosition).normalize();
-            const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, aimDirection);
-            mesh.quaternion.copy(rotation);
-
-            // Position the arrow mesh itself based on its nock's calculated position.
-            const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
-            mesh.position.copy(nockPosition).sub(rotatedNockOffset);
-
-            // Update the physics body and the visual bowstring.
-            arrowBody.setNextKinematicTranslation(mesh.position);
-            arrowBody.setNextKinematicRotation(mesh.quaternion);
-            arrowObject.nockPosition = nockPosition;
-        }
     } else if (arrowObject) {
         arrowObject.nockPosition = null;
     }
