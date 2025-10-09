@@ -133,94 +133,6 @@ class Scoreboard {
     }
 }
 
-/**
- * A class for creating and managing a visual in-VR menu.
- */
-class Menu {
-    constructor() {
-        this.canvas = document.createElement('canvas');
-        this.canvas.width = 512;
-        this.canvas.height = 1024;
-        this.context = this.canvas.getContext('2d');
-
-        this.texture = new THREE.CanvasTexture(this.canvas);
-        this.texture.encoding = THREE.sRGBEncoding;
-        this.texture.anisotropy = 16;
-
-        const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, side: THREE.DoubleSide });
-        const geometry = new THREE.PlaneGeometry(0.5, 1); // Aspect ratio 1:2
-        this.mesh = new THREE.Mesh(geometry, material);
-        this.mesh.visible = false; // Initially hidden
-    }
-
-    /**
-     * Draws the menu options on the canvas.
-     * @param {string[]} options - The array of text strings to display.
-     * @param {number} highlightedIndex - The index of the option to highlight.
-     */
-    draw(options, highlightedIndex) {
-        const ctx = this.context;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-
-        // Background
-        ctx.fillStyle = 'rgba(0, 51, 102, 0.8)'; // Semi-transparent blue
-        ctx.fillRect(0, 0, w, h);
-        ctx.strokeStyle = 'white';
-        ctx.lineWidth = 5;
-        ctx.strokeRect(0, 0, w, h);
-
-
-        // Text properties
-        ctx.font = 'bold 60px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-
-        const lineHeight = h / (options.length + 1); // Add padding
-
-        options.forEach((option, i) => {
-            const y = lineHeight * (i + 1);
-
-            if (i === highlightedIndex) {
-                ctx.fillStyle = '#FFD700'; // Gold for highlighted
-            } else {
-                ctx.fillStyle = 'white'; // White for others
-            }
-            ctx.fillText(option, w / 2, y);
-        });
-
-        this.texture.needsUpdate = true;
-    }
-
-    show() {
-        this.mesh.visible = true;
-    }
-
-    hide() {
-        this.mesh.visible = false;
-    }
-
-    getMesh() {
-        return this.mesh;
-    }
-}
-
-function moveTargetToDistance(distance) {
-    if (!target) return;
-
-    // Update the stored shooting position
-    target.userData.shootingPosition.z = -distance;
-
-    // Immediately move the visual group to the new position
-    target.position.copy(target.userData.shootingPosition);
-
-    // Sync the physics bodies to the new position
-    target.userData.ringBodies.forEach(body => {
-        body.setNextKinematicTranslation(target.position, true);
-        body.setNextKinematicRotation(target.quaternion, true);
-    });
-}
-
 
 // --- Three.js and Global Variables ---
 let camera, scene, renderer;
@@ -254,12 +166,6 @@ let currentGame = null;
 let runningTotal = 0;
 let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for history.
 
-// --- Menu ---
-let menu;
-let isMenuOpen = false;
-const targetDistances = [3, 6, 9, 15, 20, 25, 30, 40, 50];
-let selectedDistanceIndex = 0;
-
 // --- Game State Machine ---
 const GameState = {
     SHOOTING: 'shooting',
@@ -280,7 +186,6 @@ let arrowController = null;
 let sceneSetupInitiated = false;
 let aButtonPressed = [false, false]; // To track 'A' button state for each controller
 let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
-let button12Pressed = [false, false]; // To track button 12 state for each controller
 
 async function init() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -319,11 +224,6 @@ async function init() {
     scoreboardMesh.position.set(0, 1.6, -2.5);
     scene.add(scoreboardMesh);
 
-    // Create and add the menu
-    menu = new Menu();
-    scene.add(menu.getMesh());
-
-
     startNewGame();
 
 
@@ -361,18 +261,6 @@ function setupControllers() {
 function onSelectStart(event) {
     const controller = event.target;
 
-    // --- Menu Selection ---
-    if (isMenuOpen) {
-        const newDistance = targetDistances[selectedDistanceIndex];
-        moveTargetToDistance(newDistance);
-        console.log(`Target distance set to: ${newDistance}m`);
-
-        isMenuOpen = false;
-        menu.hide();
-        return; // Prevent drawing an arrow
-    }
-
-
     // If viewing history, snap back to the current game upon drawing an arrow
     if (viewingGameIndex !== -1) {
         viewingGameIndex = -1;
@@ -381,8 +269,8 @@ function onSelectStart(event) {
     }
 
     if (bowController && controller !== bowController) {
-        // Only allow drawing a new arrow if in SHOOTING state and menu is closed
-        if (gameState === GameState.SHOOTING && !arrowObject && !isMenuOpen) {
+        // Only allow drawing a new arrow if in SHOOTING state
+        if (gameState === GameState.SHOOTING && !arrowObject) {
             if (!arrowTemplate) return;
 
             const newArrowMesh = arrowTemplate.clone();
@@ -426,12 +314,11 @@ async function placeScene(floorY) {
             target.add(child.clone());
         }
     });
-    const initialDistance = targetDistances[selectedDistanceIndex];
-    target.position.set(0, floorY + 1.2, -initialDistance);
+    target.position.set(0, floorY + 1.2, -10);
     target.rotation.y = Math.PI;
     scene.add(target);
 
-    target.userData.shootingPosition = target.position.clone();
+    target.userData.originalPosition = target.position.clone();
     target.userData.scoringPosition = new THREE.Vector3(0, target.position.y, -3);
     target.userData.inScoringPosition = false;
     target.userData.ringBodies = [];
@@ -525,7 +412,7 @@ function shootArrow() {
     const maxSpeed = 30;
     const speed = drawRatio * maxSpeed;
 
-    // Use the pre-calculated direction and power
+    // Use the pre-calculated direction and power from the animate loop
     body.setLinvel(worldDirection.clone().multiplyScalar(speed), true);
 
     firedArrows.push(arrowObject);
@@ -696,80 +583,34 @@ function animate(timestamp, frame) {
                     aButtonPressed[i] = false;
                 }
 
-                // --- Menu Toggle (Button 12) ---
-                // This button is often the 'home' or 'system' button on many controllers
-                if (controller.gamepad.buttons[12] && controller.gamepad.buttons[12].pressed) {
-                    if (!button12Pressed[i]) {
-                        button12Pressed[i] = true;
-                        isMenuOpen = !isMenuOpen;
-
-                        if (isMenuOpen) {
-                            const menuMesh = menu.getMesh();
-                            // Position the menu in front of the camera
-                            const cameraDirection = new THREE.Vector3();
-                            camera.getWorldDirection(cameraDirection);
-                            const distance = 1.5;
-                            menuMesh.position.copy(camera.position).add(cameraDirection.multiplyScalar(distance));
-                            menuMesh.quaternion.copy(camera.quaternion);
-
-                            // Initial draw
-                            const distanceOptions = targetDistances.map(d => `${d} meters`);
-                            menu.draw(distanceOptions, selectedDistanceIndex);
-                            menu.show();
-                            console.log("Menu opened.");
-                        } else {
-                            menu.hide();
-                            console.log("Menu closed.");
-                        }
-                    }
-                } else {
-                    button12Pressed[i] = false;
-                }
-
-
-                // --- Joystick Navigation (History and Menu) ---
+                // --- History Navigation with Joystick ---
                 if (controller.gamepad.axes.length > 3) {
                     const joystickY = controller.gamepad.axes[3]; // Typically the Y-axis of the right stick
 
-                    if (Math.abs(joystickY) > 0.8) {
+                    if (Math.abs(joystickY) > 0.8) { // High threshold for deliberate movement
                         if (!joystickMoved[i]) {
                             joystickMoved[i] = true;
-                            const distanceOptions = targetDistances.map(d => `${d} meters`);
-
-                            if (isMenuOpen) {
-                                // --- Menu Navigation ---
-                                if (joystickY < 0) { // Up
-                                    selectedDistanceIndex = Math.max(0, selectedDistanceIndex - 1);
-                                } else { // Down
-                                    selectedDistanceIndex = Math.min(distanceOptions.length - 1, selectedDistanceIndex + 1);
+                            if (joystickY < 0) { // Stick moved up
+                                if (viewingGameIndex > -1) {
+                                    viewingGameIndex--;
+                                } else if (gameHistory.length > 0) { // Wrap from current to last historical
+                                    viewingGameIndex = gameHistory.length - 1;
                                 }
-                                menu.draw(distanceOptions, selectedDistanceIndex);
-                                console.log(`Selected distance index: ${selectedDistanceIndex}`);
+                            } else { // Stick moved down
+                                if (viewingGameIndex < gameHistory.length - 1) {
+                                    viewingGameIndex++;
+                                } else if (viewingGameIndex !== -1) { // Wrap from last historical to current
+                                    viewingGameIndex = -1;
+                                }
+                            }
 
+                            // Update scoreboard to show the selected game
+                            if (viewingGameIndex === -1) {
+                                scoreboard.displayGame(currentGame);
+                                console.log("Viewing current game");
                             } else {
-                                // --- History Navigation ---
-                                if (joystickY < 0) { // Stick moved up
-                                    if (viewingGameIndex > -1) {
-                                        viewingGameIndex--;
-                                    } else if (gameHistory.length > 0) { // Wrap from current to last historical
-                                        viewingGameIndex = gameHistory.length - 1;
-                                    }
-                                } else { // Stick moved down
-                                    if (viewingGameIndex < gameHistory.length - 1) {
-                                        viewingGameIndex++;
-                                    } else if (viewingGameIndex !== -1) { // Wrap from last historical to current
-                                        viewingGameIndex = -1;
-                                    }
-                                }
-
-                                // Update scoreboard to show the selected game
-                                if (viewingGameIndex === -1) {
-                                    scoreboard.displayGame(currentGame);
-                                    console.log("Viewing current game");
-                                } else {
-                                    scoreboard.displayGame(gameHistory[viewingGameIndex]);
-                                    console.log(`Viewing historical game #${gameHistory[viewingGameIndex].gameNumber}`);
-                                }
+                                scoreboard.displayGame(gameHistory[viewingGameIndex]);
+                                console.log(`Viewing historical game #${gameHistory[viewingGameIndex].gameNumber}`);
                             }
                         }
                     } else {
@@ -801,69 +642,50 @@ function animate(timestamp, frame) {
         const mesh = arrowObject.mesh;
         const { forward: localForward, nock: localNock, length: arrowLength } = arrowTemplate.userData;
 
-        // --- Constrained Drawing Logic ---
-        // 1. Define the drawing axis based on the bow's forward direction in world space.
-        const worldDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(bow.quaternion);
-        const drawDirection = worldDirection.clone().negate();
+        // 1. Define the shooting direction based on the bow's orientation.
+        const shootingDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(bow.quaternion);
 
-        // 2. Project the drawing hand's position onto the drawing axis line (which passes through the bow hand).
-        const drawLine = new THREE.Line3(bowHand.position, bowHand.position.clone().add(drawDirection));
-        const projectedPoint = new THREE.Vector3();
-        drawLine.closestPointToPoint(arrowHand.position, true, projectedPoint);
+        // 2. Define the vector from the bow hand to the arrow hand.
+        const handVector = new THREE.Vector3().subVectors(arrowHand.position, bowHand.position);
 
-        // 3. Calculate draw distance, checking if the pull is backwards.
-        const vectorToProjected = new THREE.Vector3().subVectors(projectedPoint, bowHand.position);
-        const rawDrawDistance = vectorToProjected.dot(drawDirection);
+        // 3. Project the hand vector onto the bow's backward axis to get a signed draw distance.
+        const rawDrawDistance = handVector.dot(shootingDirection.clone().negate());
 
-        // 4. Clamp the draw distance to be between 0 (straight string) and the arrow's length.
+        // 4. Clamp the draw distance to be between 0 (no pull) and the arrow's length.
         const clampedDrawDistance = Math.max(0, Math.min(rawDrawDistance, arrowLength));
 
         // 5. Calculate the new nock position based on the clamped distance.
-        const nockPosition = bowHand.position.clone().add(drawDirection.clone().multiplyScalar(clampedDrawDistance));
+        const nockPosition = bowHand.position.clone().add(shootingDirection.clone().negate().multiplyScalar(clampedDrawDistance));
 
-        // 6. Position the arrow mesh.
-        const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
+        // 6. Create the rotation to align the arrow model with the shooting direction.
+        const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, shootingDirection);
         mesh.quaternion.copy(rotation);
+
+        // 7. Calculate the offset from the model's origin to its nock in world space.
         const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
+
+        // 8. Set the arrow's final position.
         mesh.position.copy(nockPosition).sub(rotatedNockOffset);
 
-        // 7. Update the physics body.
+        // 9. Update the physics body.
         arrowBody.setNextKinematicTranslation(mesh.position);
         arrowBody.setNextKinematicRotation(mesh.quaternion);
 
-        // 8. Store values for shooting and visuals.
+        // 10. Store values for shooting and visuals.
         arrowObject.nockPosition = nockPosition;
         arrowObject.drawDistance = clampedDrawDistance;
-        arrowObject.worldDirection = worldDirection;
+        arrowObject.worldDirection = shootingDirection;
 
     } else if (arrowObject) {
-        // Clear arrow properties if it's not being drawn
+        // Clear nock position for bowstring visual if arrow is not being drawn
         arrowObject.nockPosition = null;
-        arrowObject.drawDistance = 0;
-        arrowObject.worldDirection = null;
     }
 
 
     firedArrows.forEach(obj => {
         if (obj.body) {
-            // Always update the mesh position from the physics body
             obj.mesh.position.copy(obj.body.translation());
-
-            const velocity = obj.body.linvel();
-            const speedSq = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
-
-            // For arrows in flight with significant velocity, align their visual mesh with the velocity vector
-            if (obj.body.isDynamic() && speedSq > 0.01 && arrowTemplate) {
-                const worldVelocity = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
-                const localForward = arrowTemplate.userData.forward;
-
-                // Create a quaternion that rotates the local forward vector to align with the world velocity
-                const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldVelocity);
-                obj.mesh.quaternion.copy(rotation);
-            } else {
-                // For all other cases (e.g., stuck, tumbling slowly), just use the rotation from the physics engine
-                obj.mesh.quaternion.copy(obj.body.rotation());
-            }
+            obj.mesh.quaternion.copy(obj.body.rotation());
         }
     });
 
@@ -932,7 +754,7 @@ function cleanupRound() {
     if (target) {
         target.userData.inScoringPosition = false;
         // Move the visual group first, then sync physics bodies to it.
-        target.position.copy(target.userData.shootingPosition);
+        target.position.copy(target.userData.originalPosition);
         target.userData.ringBodies.forEach(body => {
             body.setNextKinematicTranslation(target.position, true);
             body.setNextKinematicRotation(target.quaternion, true);
