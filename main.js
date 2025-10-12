@@ -283,6 +283,17 @@ let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
 let button12Pressed = [false, false]; // To track button 12 state for each controller
 
 async function init() {
+    // --- Service Worker Registration ---
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js').then(registration => {
+                console.log('Service Worker registered with scope:', registration.scope);
+            }).catch(error => {
+                console.error('Service Worker registration failed:', error);
+            });
+        });
+    }
+
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.xr.enabled = true;

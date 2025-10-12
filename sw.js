@@ -1,150 +1,116 @@
-const swEnabled = 0;
+// Service Worker version: 1.0.28
+// This version number must be updated with each new deployment to trigger the update cycle.
 
-if (!swEnabled) {
-    // --- SERVICE WORKER DISABLED ---
+const APP_PREFIX = 'bowlAR-cache-';
+const PRECACHE_ASSETS = [
+    './',
+    'index.html',
+    'main.js',
+    'manifest.json',
+    'version.json',
+    '3d/archery.glb',
+    'js/three/build/three.module.js',
+    'js/rapier/rapier.mjs',
+    'js/rapier/rapier_wasm3d.js',
+    'js/rapier/rapier_wasm3d_bg.wasm',
+    'js/three/addons/webxr/ARButton.js',
+    'js/three/addons/loaders/GLTFLoader.js',
+    'js/three/addons/webxr/XRControllerModelFactory.js',
+    'js/three/addons/webxr/XRPlanes.js'
+];
 
-    self.addEventListener('install', (event) => {
-        // Skip waiting to ensure the new (disabling) service worker activates quickly.
-        console.log('Service Worker: Bypassing cache for disable.');
-        self.skipWaiting();
-    });
+self.addEventListener('install', async (event) => {
+    console.log('[SW] Install event');
+    try {
+        const versionResponse = await fetch('./version.json', { cache: 'no-store' });
+        if (!versionResponse.ok) {
+            throw new Error('Failed to fetch version.json');
+        }
+        const versionData = await versionResponse.json();
+        const CACHE_NAME = `${APP_PREFIX}v${versionData.version}`;
+        self.CACHE_NAME = CACHE_NAME; // Store for use in other events
 
-    self.addEventListener('activate', (event) => {
-        console.log('Service Worker: Deactivating and unregistering.');
         event.waitUntil(
             (async () => {
-                // 1. Unregister the service worker.
-                await self.registration.unregister();
-
-                // 2. Delete all caches.
-                const cacheNames = await caches.keys();
-                await Promise.all(cacheNames.map(cacheName => {
-                    console.log('Deleting cache:', cacheName);
-                    return caches.delete(cacheName);
-                }));
-
-                // 3. Force all clients to reload to shed the service worker.
-                const clients = await self.clients.matchAll({ type: 'window' });
-                clients.forEach((client) => {
-                    // A simple reload is often the easiest way to ensure the page
-                    // is no longer controlled by the (now unregistered) service worker.
-                    client.navigate(client.url);
-                });
-            })()
-        );
-    });
-
-} else {
-    // --- SERVICE WORKER ENABLED ---
-
-    const APP_PREFIX = 'bowlAR-';
-    let CACHE_NAME = APP_PREFIX + 'v-initial'; // Initial cache name, will be updated.
-
-    const PRECACHE_ASSETS = [
-        './',
-        'index.html',
-        'main.js',
-        'manifest.json',
-        'version.json',
-        '3d/bowling.glb',
-        'js/three/build/three.module.js',
-        'js/three/build/three.core.js',
-        'js/three/examples/jsm/loaders/GLTFLoader.js',
-        'js/three/examples/jsm/webxr/ARButton.js',
-        'js/three/examples/jsm/geometries/ConvexGeometry.js',
-        'js/three/examples/jsm/math/ConvexHull.js',
-        'js/three/examples/jsm/webxr/XRPlanes.js',
-        'js/three/examples/jsm/webxr/XRControllerModelFactory.js',
-        'js/three/examples/jsm/libs/motion-controllers.module.js',
-        'js/three/examples/jsm/utils/BufferGeometryUtils.js',
-        'js/rapier/rapier.mjs',
-        'js/rapier/rapier_wasm3d.js',
-        'js/rapier/rapier_wasm3d_bg.wasm',
-        'favicon/512x512s.png',
-        'favicon/512x512.png'
-    ];
-
-    self.addEventListener('install', event => {
-        event.waitUntil(
-            (async () => {
-                console.log('Service Worker: Install event in progress.');
-
-                // 1. Fetch version.json to get the dynamic version and key.
-                const versionRequest = new Request('./version.json', { cache: 'no-store' });
-                const versionResponse = await fetch(versionRequest);
-                if (!versionResponse.ok) {
-                    throw new Error('Could not fetch version.json. Aborting installation.');
-                }
-                const versionData = await versionResponse.json();
-
-                // 2. Set the dynamic cache name and validate the key.
-                CACHE_NAME = APP_PREFIX + 'v' + versionData.version;
-                const expectedKey = '657327cf42df016f2c66621a0616db67ac894124be94844bro';
-                if (versionData.key.trim() !== expectedKey) {
-                    throw new Error(`Version key mismatch. Aborting installation.`);
-                }
-                console.log(`Service Worker: Version key validated. Using cache name: ${CACHE_NAME}`);
-
-                // 3. Open the cache and add all assets.
+                console.log(`[SW] Caching app shell for version: ${versionData.version}`);
                 const cache = await caches.open(CACHE_NAME);
+                // The all-or-nothing nature of addAll ensures a clean install.
+                // If any asset fails to fetch, the entire installation is aborted.
                 await cache.addAll(PRECACHE_ASSETS);
-
-                console.log('Service Worker: App shell cached successfully.');
+                // Force the waiting service worker to become the active service worker.
                 return self.skipWaiting();
             })()
         );
-    });
+    } catch (error) {
+        console.error('[SW] Installation failed:', error);
+        // Do not call self.skipWaiting(), so the installation fails and the old worker remains active.
+    }
+});
 
-    self.addEventListener('activate', event => {
-        event.waitUntil(
-            caches.keys().then(cacheNames => {
-                return Promise.all(
-                    cacheNames.map(cacheName => {
-                        // Delete any cache that belongs to this app but is not the current one.
-                        if (cacheName.startsWith(APP_PREFIX) && cacheName !== CACHE_NAME) {
-                            console.log('Deleting old app cache:', cacheName);
-                            return caches.delete(cacheName);
-                        }
-                    })
-                );
-            }).then(() => self.clients.claim())
-        );
-    });
+self.addEventListener('activate', (event) => {
+    console.log('[SW] Activate event');
+    event.waitUntil(
+        (async () => {
+            // Enable navigation preload if it's supported.
+            // This allows the browser to start fetching navigation requests while the service worker is starting up.
+            if ('navigationPreload' in self.registration) {
+                await self.registration.navigationPreload.enable();
+            }
 
-    self.addEventListener('fetch', event => {
-        const url = new URL(event.request.url);
+            // Clean up old caches.
+            const cacheNames = await caches.keys();
+            await Promise.all(
+                cacheNames.map(cacheName => {
+                    if (cacheName.startsWith(APP_PREFIX) && cacheName !== self.CACHE_NAME) {
+                        console.log(`[SW] Deleting old cache: ${cacheName}`);
+                        return caches.delete(cacheName);
+                    }
+                })
+            );
+            // Take control of all open clients (tabs) immediately.
+            return self.clients.claim();
+        })()
+    );
+});
 
-        // Don't cache 3d models or the PHP script.
-        if (url.pathname.startsWith('/3d/') || url.pathname.endsWith('get_models.php')) {
-            return;
-        }
+self.addEventListener('fetch', (event) => {
+    // For non-GET requests, we don't need to do anything.
+    if (event.request.method !== 'GET') {
+        return;
+    }
 
-        // For navigation requests, use Cache-First strategy.
-        if (event.request.mode === 'navigate') {
-            event.respondWith((async () => {
-                const cache = await caches.open(CACHE_NAME);
-                const cachedResponse = await cache.match(event.request) || await cache.match('/');
-                if (cachedResponse) {
-                    return cachedResponse;
+    event.respondWith(
+        (async () => {
+            const cache = await caches.open(self.CACHE_NAME);
+            const cachedResponse = await cache.match(event.request);
+
+            // Return the cached response if it exists.
+            if (cachedResponse) {
+                // console.log(`[SW] Serving from cache: ${event.request.url}`);
+                return cachedResponse;
+            }
+
+            // For navigation requests, try to fall back to the root page if the specific page isn't cached.
+            // This is useful for single-page applications.
+            if (event.request.mode === 'navigate') {
+                const rootCache = await cache.match('./');
+                if (rootCache) {
+                    return rootCache;
                 }
-                // If not in cache, this will fail while offline, which is expected for a first visit.
-                return fetch(event.request);
-            })());
-            return;
-        }
+            }
 
-        // For all other requests (assets like JS, CSS), use a cache-first strategy.
-        event.respondWith(
-            (async () => {
-                const cache = await caches.open(CACHE_NAME);
-                const cachedResponse = await cache.match(event.request);
-                if (cachedResponse) {
-                    return cachedResponse;
-                }
+            // If the resource is not in the cache, fetch it from the network.
+            // This path is taken for assets not in PRECACHE_ASSETS or for the very first visit.
+            try {
+                // console.log(`[SW] Fetching from network: ${event.request.url}`);
                 const networkResponse = await fetch(event.request);
-                await cache.put(event.request, networkResponse.clone());
                 return networkResponse;
-            })()
-        );
-    });
-}
+            } catch (error) {
+                console.error(`[SW] Fetch failed for: ${event.request.url}`, error);
+                // Optionally, you could return a custom offline fallback page here.
+                // For example: return caches.match('/offline.html');
+                throw error;
+            }
+        })()
+    );
+});
