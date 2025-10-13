@@ -5,6 +5,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { XRPlanes } from 'three/addons/webxr/XRPlanes.js';
 
+var myLine;
+
+const OFFSET_DISTANCE = 0.015;
+let offsetDirection,LOCAL_LEFT;
+
 /**
  * A class for creating and managing a visual scoreboard in a Three.js scene.
  * The scoreboard is a "dumb" component that only renders game data passed to it.
@@ -206,7 +211,7 @@ class Menu {
 }
 
 function moveTargetToDistance(distance) {
-    if (!target) return;
+    if (!target || !target.userData.body) return;
 
     // Update the stored shooting position
     target.userData.shootingPosition.z = -distance;
@@ -214,11 +219,9 @@ function moveTargetToDistance(distance) {
     // Immediately move the visual group to the new position
     target.position.copy(target.userData.shootingPosition);
 
-    // Sync the physics bodies to the new position
-    target.userData.ringBodies.forEach(body => {
-        body.setNextKinematicTranslation(target.position, true);
-        body.setNextKinematicRotation(target.quaternion, true);
-    });
+    // Sync the single physics body to the new position
+    target.userData.body.setNextKinematicTranslation(target.position, true);
+    target.userData.body.setNextKinematicRotation(target.quaternion, true);
 }
 
 
@@ -302,6 +305,7 @@ async function init() {
 
     await RAPIER.init();
     world = new RAPIER.World(gravity);
+    world.integrationParameters.dt = 1 / 120; // Use a smaller timestep for more accurate physics
     eventQueue = new RAPIER.EventQueue(true);
     colliderToScoreMap = new Map();
 
@@ -411,6 +415,13 @@ function onSelectEnd(event) {
 }
 
 async function placeScene(floorY) {
+ 
+ const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
+ const points = [new THREE.Vector3(), new THREE.Vector3()];
+ const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+ myLine = new THREE.Line(lineGeometry, lineMaterial);
+ scene.add(myLine); 
+
     const gltf = await loader.loadAsync('3d/archery.glb');
 
     if (floorBody) world.removeRigidBody(floorBody);
@@ -423,46 +434,55 @@ async function placeScene(floorY) {
     const initialDistance = targetDistances[selectedDistanceIndex];
     target = new THREE.Group();
     target.userData.shootingPosition = target.position.clone();
+    target.userData.shootingPosition = target.position.clone();
     target.userData.scoringPosition = new THREE.Vector3(0, target.position.y, -3);
     target.userData.inScoringPosition = false;
-    target.userData.ringBodies = [];
-    
-         // Create a fixed rigid body for the lane at the origin.
-        // We will set its final position after creating all components.
-        const laneBodyDesc = RAPIER.RigidBodyDesc.fixed();
-        const laneBody = world.createRigidBody(laneBodyDesc);
-        const bodyPosition = new THREE.Vector3(laneBody.translation().x, laneBody.translation().y, laneBody.translation().z);
-        
+
+    // Create a single, kinematic rigid body for the entire target.
+    // It starts at the origin; its position will be set later.
+    const targetBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
+    const targetBody = world.createRigidBody(targetBodyDesc);
+    target.userData.body = targetBody; // Store the single body.
+    const bodyPosition = new THREE.Vector3().copy(targetBody.translation());
+
+
     gltf.scene.traverse(child => {
-     child.updateMatrixWorld(true); // Ensure world matrix is up-to-date
-        if (child.isMesh && !isNaN(parseInt(child.name))) { //only take numbered models for target
-            target.add(child.clone());//  console.log(child);
-            const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();//.setTranslation(target.position.x, target.position.y, target.position.z).setRotation(target.quaternion);
-            const ringBody = world.createRigidBody(ringBodyDesc);
-            target.userData.ringBodies.push(ringBody);
-            
-                const originalVertices = child.geometry.attributes.position.array;
-                const transformedVertices = new Float32Array(originalVertices.length);
-                const tempVec = new THREE.Vector3();
+        if (child.isMesh && !isNaN(parseInt(child.name))) { // Find meshes with numeric names (target rings)
+            const visualMesh = child.clone();
+            target.add(visualMesh); // Add visual mesh to the target group
 
-                for (let i = 0; i < originalVertices.length; i += 3) {
-                    tempVec.set(originalVertices[i], originalVertices[i+1], originalVertices[i+2]);
-                    // Transform vertex to world space, then to the rigid body's local space
-                    tempVec.applyMatrix4(child.matrixWorld);
-                    tempVec.sub(bodyPosition);
-                    transformedVertices[i] = tempVec.x;
-                    transformedVertices[i+1] = tempVec.y;
-                    transformedVertices[i+2] = tempVec.z;
-                }
-            
-            const colliderDesc = RAPIER.ColliderDesc.trimesh(transformedVertices, child.geometry.index.array).setCollisionGroups(TARGET_GROUP_FILTER).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+            // Ensure the child's world matrix is up-to-date
+            visualMesh.updateMatrixWorld(true);
 
-        const collider = world.createCollider(colliderDesc, ringBody);
+            // Get vertices and indices from the mesh's geometry
+            const vertices = visualMesh.geometry.attributes.position.array;
+            const indices = visualMesh.geometry.index.array;
+            const transformedVertices = new Float32Array(vertices.length);
+            const tempVec = new THREE.Vector3();
 
-        let scoreValue = child.name === '11' ? 'X' : child.name;
-        colliderToScoreMap.set(collider.handle, scoreValue);
+            // The key is to transform the vertices into the *local space* of the parent rigid body.
+            for (let i = 0; i < vertices.length; i += 3) {
+                tempVec.set(vertices[i], vertices[i+1], vertices[i+2]);
+                // Transform the vertex from the mesh's local space to world space...
+                tempVec.applyMatrix4(visualMesh.matrixWorld);
+                // ...and then subtract the parent body's world position to get the vertex's local position relative to the body.
+                tempVec.sub(bodyPosition);
+                transformedVertices[i] = tempVec.x;
+                transformedVertices[i+1] = tempVec.y;
+                transformedVertices[i+2] = tempVec.z;
+            }
 
-        collider.userData = { type: 'target' };
+            // Create a trimesh collider with the correctly transformed vertices and add it to the single targetBody
+            const colliderDesc = RAPIER.ColliderDesc.trimesh(transformedVertices, indices)
+                .setCollisionGroups(TARGET_GROUP_FILTER)
+                .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+
+            const collider = world.createCollider(colliderDesc, targetBody);
+
+            // Map the collider to its score value
+            let scoreValue = child.name === '11' ? 'X' : child.name;
+            colliderToScoreMap.set(collider.handle, scoreValue);
+            collider.userData = { type: 'target' };
         }
     });
 console.log(target);
@@ -474,12 +494,16 @@ console.log(target);
     bow = gltf.scene.getObjectByName('bow');
     if (bow) {
         scene.add(bow);
-        bow.geometry.computeBoundingBox();
+        //bow.geometry.computeBoundingBox();
         const bowBox = bow.geometry.boundingBox;
-        const bowCenterX = bowBox.getCenter(new THREE.Vector3()).x;
+        //const bowBox = new THREE.Box3().setFromObject(bow);
+        const bowSize = bowBox.getSize(new THREE.Vector3());
+        const bowCenter = bowBox.getCenter(new THREE.Vector3()); 
+        
+        //const bowCenterX = bowBox.getCenter(new THREE.Vector3()).x;
         const backZ = bowBox.min.z;
-        bow.userData.top = new THREE.Vector3(bowCenterX, bowBox.max.y, backZ);
-        bow.userData.bottom = new THREE.Vector3(bowCenterX, bowBox.min.y, backZ);
+        bow.userData.top = new THREE.Vector3(bowCenter.x, bowBox.max.y, backZ);
+        bow.userData.bottom = new THREE.Vector3(bowCenter.x, bowBox.min.y, backZ);
 
         const stringMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
         const points = new Float32Array(3 * 3);
@@ -535,9 +559,23 @@ function shootArrow() {
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
 
-    const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position).normalize();
-    const drawDistance = Math.min(arrowHand.position.distanceTo(bowHand.position), arrowTemplate.userData.length);
-    const drawRatio = drawDistance / arrowTemplate.userData.length;
+    const worldLeftDirection = LOCAL_LEFT.clone().applyQuaternion(bowHand.quaternion);
+    const arrowRestPosition = new THREE.Vector3()
+            .copy(bowHand.position)
+            .add(worldLeftDirection.multiplyScalar(OFFSET_DISTANCE));
+            
+    const worldDirection = new THREE.Vector3().subVectors(arrowRestPosition, arrowHand.position).normalize();
+    //offsetDirection
+    //const drawDistance = Math.min(arrowHand.position.distanceTo(bowHand.position), arrowTemplate.userData.length);
+    //const drawRatio = drawDistance / arrowTemplate.userData.length;
+    
+        // To ensure the arrow flies straight, get its forward direction from its rotation.
+    //const worldDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(mesh.quaternion);
+    
+    // The draw distance is still based on the hands for calculating power.
+    const drawDistance = arrowHand.position.distanceTo(bowHand.position);
+    const drawRatio = Math.min(drawDistance, arrowTemplate.userData.length) / arrowTemplate.userData.length;
+    
     const maxSpeed = 30;
     const speed = drawRatio * maxSpeed;
 
@@ -553,8 +591,8 @@ function shootArrow() {
 
 function cleanupScene() {
     if (target) {
-        // Remove physics bodies associated with the target
-        target.userData.ringBodies.forEach(body => world.removeRigidBody(body));
+        // Remove the single physics body associated with the target
+        if (target.userData.body) world.removeRigidBody(target.userData.body);
         scene.remove(target);
     }
     if (bow) scene.remove(bow);
@@ -676,12 +714,12 @@ function animate(timestamp, frame) {
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
                 target.userData.inScoringPosition = true;
-                // Move the visual group first, then sync physics bodies to it.
+                // Move the visual group first, then sync the physics body to it.
                 target.position.copy(target.userData.scoringPosition);
-                target.userData.ringBodies.forEach(body => {
-                    body.setNextKinematicTranslation(target.position, true);
-                    body.setNextKinematicRotation(target.quaternion, true);
-                });
+                if (target.userData.body) {
+                    target.userData.body.setNextKinematicTranslation(target.position, true);
+                    target.userData.body.setNextKinematicRotation(target.quaternion, true);
+                }
             }
             break;
 
@@ -811,37 +849,92 @@ function animate(timestamp, frame) {
         bow.quaternion.copy(finalRotation);
     }
 
+    
+if (bowController) {
+  const LINE_LENGTH = 0.05;
+    // 1. Get the controller object for the bow hand.
+    const bowHand = renderer.xr.getController(bowController.userData.id);
+
+    // 2. Define the "left" direction and the desired line length.
+        const offsetDirection = (bowController.userData.id === 0) ? 1 : -1; // Left hand is 0, right is 1
+        const LOCAL_LEFT = new THREE.Vector3(offsetDirection, 0, 0);
+
+
+    // 3. Get the controller's current world position and rotation.
+    const controllerPosition = new THREE.Vector3();
+    const controllerQuaternion = new THREE.Quaternion();
+    bowHand.getWorldPosition(controllerPosition);
+    bowHand.getWorldQuaternion(controllerQuaternion);
+
+    // 4. The near point of your line is the controller's position.
+    const nearPoint = controllerPosition;
+
+    // 5. Transform the local "left" vector into a world-space direction.
+    const worldLeftDirection = LOCAL_LEFT.clone().applyQuaternion(controllerQuaternion);
+
+    // 6. Calculate the far point.
+    const farPoint = new THREE.Vector3()
+        .copy(controllerPosition)
+        .add(worldLeftDirection.multiplyScalar(LINE_LENGTH));
+
+    // 7. Update the line's geometry with the new points.
+    //    (Assuming 'myLine' is the THREE.Line object you created earlier)
+    myLine.geometry.attributes.position.setXYZ(0, nearPoint.x, nearPoint.y, nearPoint.z);
+    myLine.geometry.attributes.position.setXYZ(1, farPoint.x, farPoint.y, farPoint.z);
+    myLine.geometry.attributes.position.needsUpdate = true;
+}
+
     if (arrowController && arrowObject && arrowObject.body && bowController) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
         const mesh = arrowObject.mesh;
         const { forward: localForward, nock: localNock, length: arrowLength } = arrowTemplate.userData;
+        offsetDirection = (bowController.userData.id === 0) ? 1 : -1; // Left hand is 0, right is 1
+        LOCAL_LEFT = new THREE.Vector3(offsetDirection, 0, 0);
+        console.log(offsetDirection);
 
-        // 1. Calculate the direction from the drawing hand to the bow hand.
-        const worldDirection = new THREE.Vector3().subVectors(bowHand.position, arrowHand.position);
-        const drawDistance = worldDirection.length();
-        worldDirection.normalize();
+        // 2. Transform the local "left" vector into a world-space direction.
+                                                          
+                                                   
+                                                       
+        
+                                                                                              
+        const worldLeftDirection = LOCAL_LEFT.clone().applyQuaternion(bowHand.quaternion);
 
-        // 2. Create the rotation to align the arrow model with this world direction.
-        const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldDirection);
+        // 3. Calculate the arrow rest position by starting at the bow hand and moving along the new direction.
+        const arrowRestPosition = new THREE.Vector3()
+            .copy(bowHand.position)
+            .add(worldLeftDirection.multiplyScalar(OFFSET_DISTANCE));
+
+        // 2. Calculate the direction from the arrow hand to the arrow rest.
+        const directionToRest = new THREE.Vector3().subVectors(arrowRestPosition, arrowHand.position);
+        
+        // 3. The actual draw direction is from the arrow rest back towards the arrow hand.
+        const drawDirection = directionToRest.clone().negate().normalize();
+        
+        // 4. Calculate and clamp the draw distance.
+        const drawDistance = directionToRest.length();
+        const clampedDrawDistance = Math.min(drawDistance, arrowLength);
+
+        // 5. Calculate the clamped nock position. It's pulled back from the arrow rest along the draw direction.
+        const clampedNockPosition = new THREE.Vector3().copy(arrowRestPosition).add(drawDirection.clone().multiplyScalar(clampedDrawDistance));
+
+        // 6. The arrow's rotation is based on pointing from the nock to the rest.
+        const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, drawDirection.clone().negate());
         mesh.quaternion.copy(rotation);
-
-        // 3. Calculate the offset from the model's origin to its nock, in world space.
+        
+        // 7. Calculate the rotated nock offset from the arrow's origin.
         const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
 
-        // 4. Calculate the clamped position for the nock.
-        const clampedDrawDistance = Math.min(drawDistance, arrowLength);
-        const clampedNockPosition = new THREE.Vector3().copy(bowHand.position).sub(worldDirection.clone().multiplyScalar(clampedDrawDistance));
-
-        // 5. Set the arrow's final position.
+        // 8. Set the arrow's final position. Its origin is the nock's position minus the offset.
         mesh.position.copy(clampedNockPosition).sub(rotatedNockOffset);
 
-        // 6. Update the physics body.
+        // 9. Update the physics body to match the visual mesh.
         arrowBody.setNextKinematicTranslation(mesh.position);
         arrowBody.setNextKinematicRotation(mesh.quaternion);
 
-        // Store the clamped nock position for the bowstring visual.
+        // 10. The bowstring should connect to the nock's world position.
         arrowObject.nockPosition = clampedNockPosition;
 
     } else if (arrowObject) {
@@ -936,12 +1029,12 @@ function cleanupRound() {
     // Reset target position
     if (target) {
         target.userData.inScoringPosition = false;
-        // Move the visual group first, then sync physics bodies to it.
+        // Move the visual group first, then sync the physics body to it.
         target.position.copy(target.userData.shootingPosition);
-        target.userData.ringBodies.forEach(body => {
-            body.setNextKinematicTranslation(target.position, true);
-            body.setNextKinematicRotation(target.quaternion, true);
-        });
+        if (target.userData.body) {
+            target.userData.body.setNextKinematicTranslation(target.position, true);
+            target.userData.body.setNextKinematicRotation(target.quaternion, true);
+        }
     }
 
     // After 12 arrows are scored, finalize the game
