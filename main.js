@@ -210,6 +210,30 @@ class Menu {
     }
 }
 
+class RapierDebugRenderer {
+  mesh
+  world
+  enabled = true
+
+  constructor(scene, world) {
+    this.world = world
+    this.mesh = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffffff, vertexColors: true }))
+    this.mesh.frustumCulled = false
+    scene.add(this.mesh)
+  }
+
+  update() {
+    if (this.enabled) {
+      const { vertices, colors } = this.world.debugRender()
+      this.mesh.geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3))
+      this.mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4))
+      this.mesh.visible = true
+    } else {
+      this.mesh.visible = false
+    }
+  }
+}
+
 function moveTargetToDistance(distance) {
     if (!target || !target.userData.body) return;
 
@@ -278,6 +302,7 @@ let eventQueue;
 let colliderToScoreMap;
 
 // --- Controller and State ---
+let rapierDebugRenderer;
 let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
@@ -308,6 +333,7 @@ async function init() {
     world.integrationParameters.dt = 1 / 120; // Use a smaller timestep for more accurate physics
     eventQueue = new RAPIER.EventQueue(true);
     colliderToScoreMap = new Map();
+    rapierDebugRenderer = new RapierDebugRenderer(scene, world);
 
     const arButton = ARButton.createButton(renderer, { requiredFeatures: ['local-floor', 'plane-detection'] });
     document.body.appendChild(arButton);
@@ -415,12 +441,12 @@ function onSelectEnd(event) {
 }
 
 async function placeScene(floorY) {
- 
+
  const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
  const points = [new THREE.Vector3(), new THREE.Vector3()];
  const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
  myLine = new THREE.Line(lineGeometry, lineMaterial);
- scene.add(myLine); 
+ scene.add(myLine);
 
     const gltf = await loader.loadAsync('3d/archery.glb');
 
@@ -498,8 +524,8 @@ console.log(target);
         const bowBox = bow.geometry.boundingBox;
         //const bowBox = new THREE.Box3().setFromObject(bow);
         const bowSize = bowBox.getSize(new THREE.Vector3());
-        const bowCenter = bowBox.getCenter(new THREE.Vector3()); 
-        
+        const bowCenter = bowBox.getCenter(new THREE.Vector3());
+
         //const bowCenterX = bowBox.getCenter(new THREE.Vector3()).x;
         const backZ = bowBox.min.z;
         bow.userData.top = new THREE.Vector3(bowCenter.x, bowBox.max.y, backZ);
@@ -563,19 +589,19 @@ function shootArrow() {
     const arrowRestPosition = new THREE.Vector3()
             .copy(bowHand.position)
             .add(worldLeftDirection.multiplyScalar(OFFSET_DISTANCE));
-            
+
     const worldDirection = new THREE.Vector3().subVectors(arrowRestPosition, arrowHand.position).normalize();
     //offsetDirection
     //const drawDistance = Math.min(arrowHand.position.distanceTo(bowHand.position), arrowTemplate.userData.length);
     //const drawRatio = drawDistance / arrowTemplate.userData.length;
-    
+
         // To ensure the arrow flies straight, get its forward direction from its rotation.
     //const worldDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(mesh.quaternion);
-    
+
     // The draw distance is still based on the hands for calculating power.
     const drawDistance = arrowHand.position.distanceTo(bowHand.position);
     const drawRatio = Math.min(drawDistance, arrowTemplate.userData.length) / arrowTemplate.userData.length;
-    
+
     const maxSpeed = 30;
     const speed = drawRatio * maxSpeed;
 
@@ -849,7 +875,7 @@ function animate(timestamp, frame) {
         bow.quaternion.copy(finalRotation);
     }
 
-    
+
 if (bowController) {
   const LINE_LENGTH = 0.05;
     // 1. Get the controller object for the bow hand.
@@ -895,11 +921,11 @@ if (bowController) {
         console.log(offsetDirection);
 
         // 2. Transform the local "left" vector into a world-space direction.
-                                                          
-                                                   
-                                                       
-        
-                                                                                              
+
+
+
+
+
         const worldLeftDirection = LOCAL_LEFT.clone().applyQuaternion(bowHand.quaternion);
 
         // 3. Calculate the arrow rest position by starting at the bow hand and moving along the new direction.
@@ -909,10 +935,10 @@ if (bowController) {
 
         // 2. Calculate the direction from the arrow hand to the arrow rest.
         const directionToRest = new THREE.Vector3().subVectors(arrowRestPosition, arrowHand.position);
-        
+
         // 3. The actual draw direction is from the arrow rest back towards the arrow hand.
         const drawDirection = directionToRest.clone().negate().normalize();
-        
+
         // 4. Calculate and clamp the draw distance.
         const drawDistance = directionToRest.length();
         const clampedDrawDistance = Math.min(drawDistance, arrowLength);
@@ -923,7 +949,7 @@ if (bowController) {
         // 6. The arrow's rotation is based on pointing from the nock to the rest.
         const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, drawDirection.clone().negate());
         mesh.quaternion.copy(rotation);
-        
+
         // 7. Calculate the rotated nock offset from the arrow's origin.
         const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
 
@@ -986,6 +1012,7 @@ if (bowController) {
         bowstring.geometry.computeBoundingSphere();
     }
 
+    rapierDebugRenderer.update();
     renderer.render(scene, camera);
 }
 
