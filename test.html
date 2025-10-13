@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Archery Test</title>
+    <style>
+        body { margin: 0; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <div id="log-container" style="position: absolute; top: 10px; left: 10px; padding: 10px; background-color: rgba(0,0,0,0.5); color: white; font-family: monospace; max-height: 90vh; overflow-y: auto; z-index: 100;"></div>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "./js/three/build/three.module.js",
+                "three/addons/": "./js/three/examples/jsm/",
+                "@dimforge/rapier3d-compat": "./js/rapier/rapier.mjs"
+            }
+        }
+    </script>
+    <script type="module" src="./test.js"></script>
+</body>
+</html>
