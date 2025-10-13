@@ -230,7 +230,7 @@ let floorBody = null;
 
 // --- Physics ---
 let world;
-const gravity = { x: 0.0, y: -5.0, z: 0.0 };
+const gravity = { x: 0.0, y: -9.8, z: 0.0 };
 
 // --- Collision Groups ---
 const GROUP_ARROW = 1 << 0;
@@ -257,7 +257,7 @@ let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for hist
 // --- Menu ---
 let menu;
 let isMenuOpen = false;
-const targetDistances = [3, 6, 9, 15, 20, 25, 30, 40, 50];
+const targetDistances = [1, 6, 9, 15, 20, 25, 30, 40, 50];
 let selectedDistanceIndex = 0;
 
 // --- Game State Machine ---
@@ -420,42 +420,56 @@ async function placeScene(floorY) {
     const floorCollider = world.createCollider(floorColliderDesc, floorBody);
     floorCollider.userData = { type: 'floor' };
 
-    target = new THREE.Group();
-    gltf.scene.traverse(child => {
-        if (child.isMesh && !isNaN(parseInt(child.name))) {
-            target.add(child.clone());
-        }
-    });
     const initialDistance = targetDistances[selectedDistanceIndex];
-    target.position.set(0, floorY + 1.2, -initialDistance);
-    target.rotation.y = Math.PI;
-    scene.add(target);
-
+    target = new THREE.Group();
     target.userData.shootingPosition = target.position.clone();
     target.userData.scoringPosition = new THREE.Vector3(0, target.position.y, -3);
     target.userData.inScoringPosition = false;
     target.userData.ringBodies = [];
+    
+         // Create a fixed rigid body for the lane at the origin.
+        // We will set its final position after creating all components.
+        const laneBodyDesc = RAPIER.RigidBodyDesc.fixed();
+        const laneBody = world.createRigidBody(laneBodyDesc);
+        const bodyPosition = new THREE.Vector3(laneBody.translation().x, laneBody.translation().y, laneBody.translation().z);
+        
+    gltf.scene.traverse(child => {
+     child.updateMatrixWorld(true); // Ensure world matrix is up-to-date
+        if (child.isMesh && !isNaN(parseInt(child.name))) { //only take numbered models for target
+            target.add(child.clone());//  console.log(child);
+            const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();//.setTranslation(target.position.x, target.position.y, target.position.z).setRotation(target.quaternion);
+            const ringBody = world.createRigidBody(ringBodyDesc);
+            target.userData.ringBodies.push(ringBody);
+            
+                const originalVertices = child.geometry.attributes.position.array;
+                const transformedVertices = new Float32Array(originalVertices.length);
+                const tempVec = new THREE.Vector3();
 
-    target.children.forEach(ring => {
-        const ringBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(
-            target.position.x, target.position.y, target.position.z
-        ).setRotation(target.quaternion);
-        const ringBody = world.createRigidBody(ringBodyDesc);
-        target.userData.ringBodies.push(ringBody);
-        const colliderDesc = RAPIER.ColliderDesc.trimesh(
-            ring.geometry.attributes.position.array,
-            ring.geometry.index.array
-        )
-        .setCollisionGroups(TARGET_GROUP_FILTER)
-        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+                for (let i = 0; i < originalVertices.length; i += 3) {
+                    tempVec.set(originalVertices[i], originalVertices[i+1], originalVertices[i+2]);
+                    // Transform vertex to world space, then to the rigid body's local space
+                    tempVec.applyMatrix4(child.matrixWorld);
+                    tempVec.sub(bodyPosition);
+                    transformedVertices[i] = tempVec.x;
+                    transformedVertices[i+1] = tempVec.y;
+                    transformedVertices[i+2] = tempVec.z;
+                }
+            
+            const colliderDesc = RAPIER.ColliderDesc.trimesh(transformedVertices, child.geometry.index.array).setCollisionGroups(TARGET_GROUP_FILTER).setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
 
         const collider = world.createCollider(colliderDesc, ringBody);
 
-        let scoreValue = ring.name === '11' ? 'X' : ring.name;
+        let scoreValue = child.name === '11' ? 'X' : child.name;
         colliderToScoreMap.set(collider.handle, scoreValue);
 
         collider.userData = { type: 'target' };
+        }
     });
+console.log(target);
+
+    scene.add(target);
+    moveTargetToDistance(targetDistances[selectedDistanceIndex]);
+
 
     bow = gltf.scene.getObjectByName('bow');
     if (bow) {
