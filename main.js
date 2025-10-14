@@ -164,7 +164,8 @@ class Menu {
         const h = this.canvas.height;
         const options = menuNode.options.map(opt => opt.name);
 
-        // Background
+        // Clear and draw background
+        ctx.clearRect(0, 0, w, h);
         ctx.fillStyle = 'rgba(0, 51, 102, 0.8)';
         ctx.fillRect(0, 0, w, h);
         ctx.strokeStyle = 'white';
@@ -196,7 +197,8 @@ class Menu {
         const w = this.canvas.width;
         const h = this.canvas.height;
 
-        // Background
+        // Clear and draw background
+        ctx.clearRect(0, 0, w, h);
         ctx.fillStyle = 'rgba(0, 51, 102, 0.8)';
         ctx.fillRect(0, 0, w, h);
         ctx.strokeStyle = 'white';
@@ -541,18 +543,11 @@ async function placeScene(floorY) {
     menuTree = {
         title: "Main Menu",
         options: [
-            { name: "Settings", submenu: "settings" },
+            { name: "Range", submenu: "range" },
+            { name: "Motion", submenu: "motion" },
             { name: "Help", submenu: "help" }
         ],
         submenus: {
-            settings: {
-                title: "Settings",
-                parent: "root",
-                options: [
-                    { name: "Range", submenu: "range" },
-                    { name: "Motion", submenu: "motion" }
-                ]
-            },
             help: {
                 title: "Help",
                 parent: "root",
@@ -574,7 +569,7 @@ async function placeScene(floorY) {
             },
             range: {
                 title: "Set Range",
-                parent: "settings",
+                parent: "root",
                 options: targetDistances.map(d => ({
                     name: `${d} meters`,
                     action: () => moveTargetToDistance(d)
@@ -582,7 +577,7 @@ async function placeScene(floorY) {
             },
             motion: {
                 title: "Set Motion",
-                parent: "settings",
+                parent: "root",
                 options: [
                     { name: "Still", action: () => console.log("Target motion: Still") },
                     { name: "Left & Right", action: () => console.log("Target motion: Left & Right") },
