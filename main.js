@@ -9,6 +9,7 @@ var myLine;
 
 const OFFSET_DISTANCE = 0.015;
 let offsetDirection,LOCAL_LEFT;
+let sty=0.5; //start and scoring height
 
 /**
  * A class for creating and managing a visual scoreboard in a Three.js scene.
@@ -263,7 +264,7 @@ class RapierDebugRenderer {
 function moveTargetToDistance(distance) {
     if (!target || !target.userData.body) return;
 
-    const newPosition = new THREE.Vector3(0, initialTargetPosition ? initialTargetPosition.y : 0.5, -distance);
+    const newPosition = new THREE.Vector3(0, initialTargetPosition ? initialTargetPosition.y : sty, -distance);
 
     // Update the stored shooting position and the global initial position
     target.userData.shootingPosition.copy(newPosition);
@@ -325,6 +326,7 @@ let motionTheta = 0;
 let motionPhi = Math.PI / 2;
 let isScoreboardVisible = true;
 let isAimAssistVisible = true;
+let scoreboardStateBeforeInspection = true;
 let qixMotionDirection = new THREE.Vector3();
 let qixMotionDuration = 0;
 let qixMotionStartTime = 0;
@@ -656,8 +658,8 @@ async function placeScene(floorY) {
 
     const initialDistance = targetDistances[0]; // Default to the first distance
     target = new THREE.Group();
-    target.userData.shootingPosition = new THREE.Vector3(0, 0.5, -initialDistance);
-    target.userData.scoringPosition = new THREE.Vector3(0, 0.5, -1.2);
+    target.userData.shootingPosition = new THREE.Vector3(0, sty, -initialDistance);
+    target.userData.scoringPosition = new THREE.Vector3(0, sty, -1.2);
     target.userData.inScoringPosition = false;
 
     // Create a single, kinematic rigid body for the entire target.
@@ -960,7 +962,8 @@ function animate(timestamp, frame) {
 
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
-                isScoreboardVisible = true; // Show scoreboard when inspecting
+                scoreboardStateBeforeInspection = isScoreboardVisible;
+                    isScoreboardVisible = true; // Show scoreboard when inspecting
                 target.userData.inScoringPosition = true;
                 // Move the visual group first, then sync the physics body to it.
                 target.position.copy(target.userData.scoringPosition);
@@ -1202,7 +1205,7 @@ function animate(timestamp, frame) {
 
 
     if (gameState === GameState.RESETTING) {
-        isScoreboardVisible = false;
+        isScoreboardVisible = scoreboardStateBeforeInspection;
         cleanupRound();
         gameState = GameState.SHOOTING;
         console.log("Returning to SHOOTING state.");
