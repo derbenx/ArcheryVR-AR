@@ -865,18 +865,22 @@ function animate(timestamp, frame) {
 
     if (world) world.step(eventQueue);
 
+    const collisions = new Map();
+
     eventQueue.drainCollisionEvents((handle1, handle2, started) => {
         if (!started) return;
 
         const collider1 = world.getCollider(handle1);
         const collider2 = world.getCollider(handle2);
 
-        let arrow, otherCollider;
+        let arrow, otherCollider, arrowHandle;
         if (collider1?.userData?.type === 'arrow') {
             arrow = collider1.userData.arrow;
+            arrowHandle = handle1;
             otherCollider = collider2;
         } else if (collider2?.userData?.type === 'arrow') {
             arrow = collider2.userData.arrow;
+            arrowHandle = handle2;
             otherCollider = collider1;
         } else {
             return;
@@ -884,30 +888,44 @@ function animate(timestamp, frame) {
 
         if (arrow.hasScored) return;
 
+        if (!collisions.has(arrowHandle)) {
+            collisions.set(arrowHandle, { arrow: arrow, scores: [] });
+        }
+
         if (otherCollider?.userData?.type === 'target') {
-            arrow.hasScored = true;
             const scoreValue = colliderToScoreMap.get(otherCollider.handle);
-            arrow.score = scoreValue;
-            console.log(`Arrow hit target for score: ${arrow.score}`);
-
-            // To make arrow "stick," remove its physics body and parent it to the target.
-            // The `attach` method correctly handles preserving the world transform.
-            if (arrow.body) {
-                target.attach(arrow.mesh);
-                world.removeRigidBody(arrow.body);
-                arrow.body = null;
-            }
-
+            collisions.get(arrowHandle).scores.push(scoreValue);
         } else if (otherCollider?.userData?.type === 'floor') {
-            arrow.hasScored = true;
-            arrow.score = 'M'; // Miss
-            console.log('Arrow hit floor. Miss.');
-             // Make arrow stick to floor
-            if (arrow.body) {
-                arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
-            }
+            collisions.get(arrowHandle).scores.push('M');
         }
     });
+
+    for (const [arrowHandle, collisionData] of collisions.entries()) {
+        const { arrow, scores } = collisionData;
+
+        if (scores.length > 0) {
+            arrow.hasScored = true;
+
+            // Determine the best score
+            const scoreValue = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
+            scores.sort((a, b) => scoreValue(b) - scoreValue(a));
+            arrow.score = scores[0];
+
+            console.log(`Arrow hit target for score: ${arrow.score}`);
+
+            if (arrow.score === 'M') {
+                if (arrow.body) {
+                    arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
+                }
+            } else {
+                if (arrow.body) {
+                    target.attach(arrow.mesh);
+                    world.removeRigidBody(arrow.body);
+                    arrow.body = null;
+                }
+            }
+        }
+    }
 
     // --- Game State Machine ---
 
