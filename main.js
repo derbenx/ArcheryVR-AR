@@ -323,14 +323,13 @@ let targetMotionSpeed = 'Medium'; // Slow, Medium, Fast, Random
 let initialTargetPosition = null;
 let motionTheta = 0;
 let motionPhi = Math.PI / 2;
-// New state for Qix-style motion
+let isScoreboardVisible = true;
+let isAimAssistVisible = true;
 let qixMotionDirection = new THREE.Vector3();
 let qixMotionDuration = 0;
 let qixMotionStartTime = 0;
 let lastTimestamp = 0;
-
-// --- Scoreboard State ---
-let isScoreboardVisible = true;
+let randomMotionStartPosition = new THREE.Vector3();
 
 // --- Game State Machine ---
 const GameState = {
@@ -543,11 +542,12 @@ function onSelectEnd(event) {
 
 async function placeScene(floorY) {
 
- const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
- const points = [new THREE.Vector3(), new THREE.Vector3()];
- const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
- myLine = new THREE.Line(lineGeometry, lineMaterial);
- scene.add(myLine);
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
+    const points = [new THREE.Vector3(), new THREE.Vector3()];
+    const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+    myLine = new THREE.Line(lineGeometry, lineMaterial);
+    myLine.visible = false;
+    scene.add(myLine);
 
     const gltf = await loader.loadAsync('3d/archery.glb');
 
@@ -567,6 +567,8 @@ async function placeScene(floorY) {
         if (targetMotionState !== 'Still') {
             options.push({ name: "Speed", submenu: "speed" });
         }
+        options.push({ name: "Scoreboard", submenu: "scoreboard" });
+        options.push({ name: "Aim Assist", submenu: "aim" });
         options.push({ name: "Help", submenu: "help" });
         return options;
     };
@@ -575,6 +577,22 @@ async function placeScene(floorY) {
         title: "Main Menu",
         getOptions: getMainMenuOptions, // Use a function to generate options
         submenus: {
+            scoreboard: {
+                title: "Scoreboard",
+                parent: "root",
+                options: [
+                    { name: "Show", action: () => { isScoreboardVisible = true; } },
+                    { name: "Hide", action: () => { isScoreboardVisible = false; } }
+                ]
+            },
+            aim: {
+                title: "Aim Assist",
+                parent: "root",
+                options: [
+                    { name: "On", action: () => { isAimAssistVisible = true; } },
+                    { name: "Off", action: () => { isAimAssistVisible = false; } }
+                ]
+            },
             help: {
                 title: "Help",
                 parent: "root",
@@ -614,9 +632,8 @@ async function placeScene(floorY) {
                         targetMotionState = 'Random';
                         if(target && initialTargetPosition) {
                             target.position.copy(initialTargetPosition);
-                            // Reset the start time to force an immediate recalculation of the qix path
                             qixMotionStartTime = 0;
-                            lastTimestamp = 0; // Also reset the timestamp for deltaTime calculation
+                            lastTimestamp = 0;
                         }
                     } }
                 ]
@@ -640,7 +657,7 @@ async function placeScene(floorY) {
     const initialDistance = targetDistances[0]; // Default to the first distance
     target = new THREE.Group();
     target.userData.shootingPosition = new THREE.Vector3(0, 1.6, -initialDistance);
-    target.userData.scoringPosition = new THREE.Vector3(0, 1.2, -1.2);
+    target.userData.scoringPosition = new THREE.Vector3(0, 1.6, -1.2);
     target.userData.inScoringPosition = false;
 
     // Create a single, kinematic rigid body for the entire target.
@@ -942,6 +959,16 @@ function animate(timestamp, frame) {
     }
 
 
+    if (scoreboard && scoreboard.getMesh()) {
+        scoreboard.getMesh().visible = isScoreboardVisible;
+    }
+
+    if (bowController && myLine) {
+        myLine.visible = isAimAssistVisible;
+    } else if (myLine) {
+        myLine.visible = false;
+    }
+
     if (renderer.xr.isPresenting) {
         for (let i = 0; i < 2; i++) {
             const controller = renderer.xr.getController(i);
@@ -1121,6 +1148,7 @@ function animate(timestamp, frame) {
                 if (qixTime > qixMotionStartTime + qixMotionDuration) {
                     qixMotionStartTime = qixTime;
                     qixMotionDuration = Math.random() * 3 + 2; // Move for 2-5 seconds
+                    randomMotionStartPosition.copy(target.position);
 
                     qixMotionDirection.set(
                         Math.random() - 0.5,
@@ -1129,20 +1157,17 @@ function animate(timestamp, frame) {
                     ).normalize();
                 }
 
-                const deltaTime = lastTimestamp > 0 ? (timestamp - lastTimestamp) / 1000 : 0;
-                lastTimestamp = timestamp;
+                const deltaTime = time - (lastTimestamp > 0 ? lastTimestamp : time);
+                lastTimestamp = time;
 
-                // Use the correct 'speed' from the speedMap, not the 'time' variable
                 const qixSpeedFactor = 0.2;
                 const moveStep = qixSpeedFactor * speed * deltaTime;
 
-                // Start with the current position and move it
                 newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
 
-                // Project the new position back onto the sphere around the camera
                 const distance = -target.userData.shootingPosition.z;
-                const directionFromCamera = newPosition.clone().sub(camera.position).normalize();
-                newPosition.copy(camera.position).addScaledVector(directionFromCamera, distance);
+                const directionFromCamera = newPosition.clone().sub(new THREE.Vector3(0, 0, 0)).normalize();
+                newPosition.copy(new THREE.Vector3(0, 0, 0)).addScaledVector(directionFromCamera, distance);
 
                 if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
                     newPosition.y = floorBody.translation().y + 1.0;
