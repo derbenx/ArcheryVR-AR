@@ -624,7 +624,7 @@ async function placeScene(floorY) {
     menuTree.submenus.root = menuTree;
 
 
-    const initialDistance = targetDistances[selectedDistanceIndex];
+    const initialDistance = targetDistances[0]; // Default to the first distance
     target = new THREE.Group();
     target.userData.shootingPosition = new THREE.Vector3(0, 1.6, -initialDistance);
     target.userData.scoringPosition = new THREE.Vector3(0, 1.6, -1.2);
