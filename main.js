@@ -419,9 +419,11 @@ function onSelectStart(event) {
             newArrowMesh.visible = true;
             scene.add(newArrowMesh);
 
-            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
+            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setCcdEnabled(true);
             const body = world.createRigidBody(arrowBodyDesc);
-            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length / 2) // Rapier cuboids are half-extents
+            const vertices = arrowTemplate.geometry.attributes.position.array;
+            const indices = arrowTemplate.geometry.index.array;
+            const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices)
                 .setMass(0.1)
                 .setCollisionGroups(ARROW_GROUP_FILTER)
                 .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
