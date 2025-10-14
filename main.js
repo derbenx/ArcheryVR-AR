@@ -396,12 +396,52 @@ function onSelectStart(event) {
         const newDistance = targetDistances[selectedDistanceIndex];
         moveTargetToDistance(newDistance);
         console.log(`Target distance set to: ${newDistance}m`);
-
         isMenuOpen = false;
         menu.hide();
-        return; // Prevent drawing an arrow
+        return; // Prevent other actions
     }
 
+    // --- Arrow Spawning ---
+    // Conditions: No arrow currently held, not holding the bow with this hand.
+    if (!arrowObject && controller !== bowController) {
+        const otherController = renderer.xr.getController(1 - controller.userData.id);
+        if (otherController) {
+            const distance = controller.position.distanceTo(otherController.position);
+
+            // Spawn only if hands are far enough apart
+            if (distance > 0.10) {
+                if (!arrowTemplate) return;
+
+                const newArrowMesh = arrowTemplate.clone();
+                newArrowMesh.visible = true;
+
+                // Create physics body
+                const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
+                const body = world.createRigidBody(arrowBodyDesc);
+                const vertices = arrowTemplate.geometry.attributes.position.array;
+                const indices = arrowTemplate.geometry.index.array;
+                const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices)
+                    .setMass(0.1)
+                    .setCollisionGroups(ARROW_GROUP_FILTER)
+                    .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+                const collider = world.createCollider(colliderDesc, body);
+
+                // Create the arrow object with new state
+                arrowObject = {
+                    mesh: newArrowMesh,
+                    body: body,
+                    isNocked: false, // New state for nocking
+                    hasScored: false,
+                    score: 'M'
+                };
+                collider.userData = { type: 'arrow', arrow: arrowObject };
+
+                // Parent the arrow to the controller that spawned it
+                controller.add(newArrowMesh);
+                arrowController = controller;
+            }
+        }
+    }
 
     // If viewing history, snap back to the current game upon drawing an arrow
     if (viewingGameIndex !== -1) {
@@ -409,36 +449,22 @@ function onSelectStart(event) {
         scoreboard.displayGame(currentGame);
         console.log("Switched back to current game due to drawing arrow.");
     }
-
-    if (bowController && controller !== bowController) {
-        // Only allow drawing a new arrow if in SHOOTING state and menu is closed
-        if (gameState === GameState.SHOOTING && !arrowObject && !isMenuOpen) {
-            if (!arrowTemplate) return;
-
-            const newArrowMesh = arrowTemplate.clone();
-            newArrowMesh.visible = true;
-            scene.add(newArrowMesh);
-
-            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setCcdEnabled(false);
-            const body = world.createRigidBody(arrowBodyDesc);
-            const vertices = arrowTemplate.geometry.attributes.position.array;
-            const indices = arrowTemplate.geometry.index.array;
-            const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices)
-                .setMass(0.1)
-                .setCollisionGroups(ARROW_GROUP_FILTER)
-                .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-            const collider = world.createCollider(colliderDesc, body);
-
-            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false, score: 'M' }; // Default score is Miss
-            collider.userData = { type: 'arrow', arrow: arrowObject };
-        }
-        arrowController = controller;
-    }
 }
 
 function onSelectEnd(event) {
-    if (arrowController === event.target) {
-        shootArrow();
+    const controller = event.target;
+    if (controller === arrowController && arrowObject) {
+        if (arrowObject.isNocked) {
+            // If arrow is nocked, fire it
+            shootArrow();
+        } else {
+            // If not nocked, cancel the arrow
+            console.log("Arrow grab released without nocking. Cancelling arrow.");
+            if (arrowObject.mesh) arrowObject.mesh.removeFromParent(); // Remove from controller
+            if (arrowObject.body) world.removeRigidBody(arrowObject.body);
+            arrowObject = null;
+            arrowController = null;
+        }
     }
 }
 
@@ -582,9 +608,11 @@ function shootArrow() {
 
     const { mesh, body } = arrowObject;
 
+    // Ensure the body is dynamic and awake before applying forces.
+    body.setBodyType(RAPIER.RigidBodyType.Dynamic);
     body.setTranslation(mesh.position, true);
     body.setRotation(mesh.quaternion, true);
-    body.setBodyType(RAPIER.RigidBodyType.Dynamic);
+    body.wakeUp(); // Ensure the body is active in the simulation
 
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
@@ -766,15 +794,22 @@ function animate(timestamp, frame) {
                 // --- Grip button for holding the bow ---
                 if (controller.gamepad.buttons[1].pressed) {
                     if (!bowController) {
-                     bowController = controller;
-                     if (bow) bow.visible = true;
-                     if (bowstring) bowstring.visible = true;
+                        // Check distance between hands before spawning the bow
+                        const otherController = renderer.xr.getController(1 - i); // Get the other controller
+                        if (otherController) {
+                            const distance = controller.position.distanceTo(otherController.position);
+                            if (distance > 0.10) { // 10cm threshold
+                                bowController = controller;
+                                if (bow) bow.visible = true;
+                                if (bowstring) bowstring.visible = true;
+                            }
+                        }
                     }
                 } else {
-                    if (bowController === controller) { 
-                     bowController = null;
-                     if (bow) bow.visible = false;
-                     if (bowstring) bowstring.visible = false;
+                    if (bowController === controller) {
+                        bowController = null;
+                        if (bow) bow.visible = false;
+                        if (bowstring) bowstring.visible = false;
                     }
                 }
 
@@ -922,7 +957,22 @@ if (bowController) {
     myLine.geometry.attributes.position.needsUpdate = true;
 }
 
-    if (arrowController && arrowObject && arrowObject.body && bowController) {
+    // --- Proximity Nocking ---
+    if (arrowObject && !arrowObject.isNocked && bowController && arrowController) {
+        const bowHand = renderer.xr.getController(bowController.userData.id);
+        const arrowHand = renderer.xr.getController(arrowController.userData.id);
+        const distance = bowHand.position.distanceTo(arrowHand.position);
+
+        if (distance < 0.05) { // 5cm threshold
+            console.log("Nocking arrow by proximity.");
+            arrowObject.isNocked = true;
+            // Detach arrow from controller and add to scene to allow independent drawing motion.
+            scene.attach(arrowObject.mesh);
+        }
+    }
+
+    // --- Arrow Drawing Logic (only when nocked) ---
+    if (arrowController && arrowObject && arrowObject.isNocked && arrowObject.body && bowController) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
