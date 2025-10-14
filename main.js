@@ -162,7 +162,7 @@ class Menu {
         const ctx = this.context;
         const w = this.canvas.width;
         const h = this.canvas.height;
-        const options = menuNode.options.map(opt => opt.name);
+        const options = (typeof menuNode.getOptions === 'function' ? menuNode.getOptions() : menuNode.options).map(opt => opt.name);
 
         // Clear and draw background
         ctx.clearRect(0, 0, w, h);
@@ -317,6 +317,11 @@ let selectedMenuIndex = 0;
 let menuTree; // Will be defined in placeScene
 let currentMenuNode = null;
 
+// --- Target Motion State ---
+let targetMotionState = 'Still'; // Still, Left & Right, Up & Down, Random
+let targetMotionSpeed = 'Medium'; // Slow, Medium, Fast, Random
+let initialTargetPosition = null;
+
 // --- Game State Machine ---
 const GameState = {
     SHOOTING: 'shooting',
@@ -434,10 +439,10 @@ function onSelectStart(event) {
             return;
         }
 
-        const selectedOption = currentMenuNode.options[selectedMenuIndex];
+        const options = typeof currentMenuNode.getOptions === 'function' ? currentMenuNode.getOptions() : currentMenuNode.options;
+        const selectedOption = options[selectedMenuIndex];
         if (selectedOption) {
             if (selectedOption.submenu) {
-                // Navigate to submenu
                 currentMenuNode = menuTree.submenus[selectedOption.submenu];
                 selectedMenuIndex = 0;
                 if (currentMenuNode.type === 'info') {
@@ -446,7 +451,6 @@ function onSelectStart(event) {
                     menu.draw(currentMenuNode, selectedMenuIndex);
                 }
             } else if (selectedOption.action) {
-                // Execute action and close menu
                 selectedOption.action();
                 isMenuOpen = false;
                 menu.hide();
@@ -540,13 +544,21 @@ async function placeScene(floorY) {
     floorCollider.userData = { type: 'floor' };
 
     // --- Menu Tree Definition ---
+    const getMainMenuOptions = () => {
+        const options = [
+            { name: "Range", submenu: "range" },
+            { name: "Motion", submenu: "motion" }
+        ];
+        if (targetMotionState !== 'Still') {
+            options.push({ name: "Speed", submenu: "speed" });
+        }
+        options.push({ name: "Help", submenu: "help" });
+        return options;
+    };
+
     menuTree = {
         title: "Main Menu",
-        options: [
-            { name: "Range", submenu: "range" },
-            { name: "Motion", submenu: "motion" },
-            { name: "Help", submenu: "help" }
-        ],
+        getOptions: getMainMenuOptions, // Use a function to generate options
         submenus: {
             help: {
                 title: "Help",
@@ -579,10 +591,20 @@ async function placeScene(floorY) {
                 title: "Set Motion",
                 parent: "root",
                 options: [
-                    { name: "Still", action: () => console.log("Target motion: Still") },
-                    { name: "Left & Right", action: () => console.log("Target motion: Left & Right") },
-                    { name: "Up & Down", action: () => console.log("Target motion: Up & Down") },
-                    { name: "Random", action: () => console.log("Target motion: Random") }
+                    { name: "Still", action: () => { targetMotionState = 'Still'; if(target) target.position.copy(initialTargetPosition); } },
+                    { name: "Left & Right", action: () => { targetMotionState = 'Left & Right'; if(target) target.position.copy(initialTargetPosition); } },
+                    { name: "Up & Down", action: () => { targetMotionState = 'Up & Down'; if(target) target.position.copy(initialTargetPosition); } },
+                    { name: "Random", action: () => { targetMotionState = 'Random'; if(target) target.position.copy(initialTargetPosition); } }
+                ]
+            },
+            speed: {
+                title: "Set Speed",
+                parent: "root",
+                options: [
+                    { name: "Slow", action: () => { targetMotionSpeed = 'Slow'; } },
+                    { name: "Medium", action: () => { targetMotionSpeed = 'Medium'; } },
+                    { name: "Fast", action: () => { targetMotionSpeed = 'Fast'; } },
+                    { name: "Random", action: () => { targetMotionSpeed = 'Random'; } }
                 ]
             }
         }
@@ -649,6 +671,9 @@ console.log(target);
 
     scene.add(target);
     moveTargetToDistance(targetDistances[selectedDistanceIndex]);
+
+    // Store the initial position after it's set
+    initialTargetPosition = target.position.clone();
 
 
     bow = gltf.scene.getObjectByName('bow');
@@ -995,8 +1020,8 @@ function animate(timestamp, frame) {
                             joystickMoved[i] = true;
 
                             if (isMenuOpen && currentMenuNode && currentMenuNode.type !== 'info') {
-                                // --- Menu Navigation ---
-                                const numOptions = currentMenuNode.options.length;
+                                const options = typeof currentMenuNode.getOptions === 'function' ? currentMenuNode.getOptions() : currentMenuNode.options;
+                                const numOptions = options.length;
                                 if (joystickY < 0) { // Up
                                     selectedMenuIndex = (selectedMenuIndex - 1 + numOptions) % numOptions;
                                 } else { // Down
@@ -1026,6 +1051,36 @@ function animate(timestamp, frame) {
             }
         }
     }
+
+    // --- Target Motion Logic ---
+    if (targetMotionState !== 'Still' && target && initialTargetPosition && target.userData.body) {
+        const time = performance.now() / 1000; // Time in seconds
+        const speedMap = { Slow: 0.5, Medium: 1, Fast: 2, Random: 1 };
+        let speed = speedMap[targetMotionSpeed] || 1;
+
+        const newPosition = initialTargetPosition.clone();
+
+        switch (targetMotionState) {
+            case 'Left & Right':
+                // Oscillate -1m to +1m on the X axis
+                newPosition.x += Math.sin(time * speed);
+                break;
+            case 'Up & Down':
+                // Oscillate 0 to +2m on the Y axis
+                newPosition.y += 1 + Math.sin(time * speed);
+                break;
+            case 'Random':
+                // Combine sine waves for a less predictable path
+                newPosition.x += Math.sin(time * speed * 0.7) * 0.6;
+                newPosition.y += Math.sin(time * speed * 1.1) * 0.8 + 1;
+                break;
+        }
+
+        // Update both the visual mesh and the physics body
+        target.position.copy(newPosition);
+        target.userData.body.setNextKinematicTranslation(newPosition, true);
+    }
+
 
     if (gameState === GameState.RESETTING) {
         cleanupRound();
