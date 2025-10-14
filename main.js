@@ -263,14 +263,15 @@ class RapierDebugRenderer {
 function moveTargetToDistance(distance) {
     if (!target || !target.userData.body) return;
 
-    // Update the stored shooting position
-    target.userData.shootingPosition.z = -distance;
+    const newPosition = new THREE.Vector3(0, initialTargetPosition ? initialTargetPosition.y : 1.6, -distance);
 
-    // Immediately move the visual group to the new position
-    target.position.copy(target.userData.shootingPosition);
+    // Update the stored shooting position and the global initial position
+    target.userData.shootingPosition.copy(newPosition);
+    if(initialTargetPosition) initialTargetPosition.copy(newPosition);
 
-    // Sync the single physics body to the new position
-    target.userData.body.setNextKinematicTranslation(target.position, true);
+    // Immediately move the visual group and sync the physics body
+    target.position.copy(newPosition);
+    target.userData.body.setNextKinematicTranslation(newPosition, true);
     target.userData.body.setNextKinematicRotation(target.quaternion, true);
 }
 
@@ -311,7 +312,6 @@ let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for hist
 let menu;
 let isMenuOpen = false;
 const targetDistances = [3, 6, 9, 15, 20, 25, 30, 40, 50];
-let selectedDistanceIndex = 0; // This will be deprecated but kept for now.
 let selectedMenuIndex = 0;
 
 let menuTree; // Will be defined in placeScene
@@ -323,6 +323,9 @@ let targetMotionSpeed = 'Medium'; // Slow, Medium, Fast, Random
 let initialTargetPosition = null;
 let motionTheta = 0;
 let motionPhi = Math.PI / 2;
+
+// --- Scoreboard State ---
+let isScoreboardVisible = true;
 
 // --- Game State Machine ---
 const GameState = {
@@ -345,6 +348,7 @@ let arrowController = null;
 let sceneSetupInitiated = false;
 let aButtonPressed = [false, false]; // To track 'A' button state for each controller
 let bButtonPressed = [false, false]; // To track 'B' button state for each controller
+let thumbstickPressed = [false, false]; // To track thumbstick button state
 let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
 let button12Pressed = [false, false]; // To track button 12 state for each controller
 
@@ -464,6 +468,10 @@ function onSelectStart(event) {
     // --- Arrow Spawning ---
     // Conditions: No arrow currently held, not holding the bow with this hand.
     if (!arrowObject && controller !== bowController) {
+        // Explicitly check if the controller is the bow controller
+        if (bowController && controller.userData.id === bowController.userData.id) {
+            return;
+        }
         const otherController = renderer.xr.getController(1 - controller.userData.id);
         if (otherController) {
             const distance = controller.position.distanceTo(otherController.position);
@@ -573,6 +581,7 @@ async function placeScene(floorY) {
                     "A Button: Confirm Menu",
                     "B Button: Cancel/Back Menu",
                     "Joystick: Navigate Menu",
+                    "Thumbstick: Toggle Scoreboard",
                     "",
                     "PROCEDURE:",
                     "1. Hold Grip for Bow.",
@@ -593,10 +602,10 @@ async function placeScene(floorY) {
                 title: "Set Motion",
                 parent: "root",
                 options: [
-                    { name: "Still", action: () => { targetMotionState = 'Still'; if(target) target.position.copy(initialTargetPosition); } },
-                    { name: "Left & Right", action: () => { targetMotionState = 'Left & Right'; if(target) target.position.copy(initialTargetPosition); } },
-                    { name: "Up & Down", action: () => { targetMotionState = 'Up & Down'; if(target) target.position.copy(initialTargetPosition); } },
-                    { name: "Random", action: () => { targetMotionState = 'Random'; if(target) target.position.copy(initialTargetPosition); } }
+                    { name: "Still", action: () => { targetMotionState = 'Still'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
+                    { name: "Left & Right", action: () => { targetMotionState = 'Left & Right'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
+                    { name: "Up & Down", action: () => { targetMotionState = 'Up & Down'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
+                    { name: "Random", action: () => { targetMotionState = 'Random'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } }
                 ]
             },
             speed: {
@@ -617,9 +626,8 @@ async function placeScene(floorY) {
 
     const initialDistance = targetDistances[selectedDistanceIndex];
     target = new THREE.Group();
-    target.userData.shootingPosition = target.position.clone();
-    target.userData.shootingPosition = target.position.clone();
-    target.userData.scoringPosition = new THREE.Vector3(0, target.position.y, -1.2);
+    target.userData.shootingPosition = new THREE.Vector3(0, 1.6, -initialDistance);
+    target.userData.scoringPosition = new THREE.Vector3(0, 1.6, -1.2);
     target.userData.inScoringPosition = false;
 
     // Create a single, kinematic rigid body for the entire target.
@@ -672,7 +680,7 @@ async function placeScene(floorY) {
 console.log(target);
 
     scene.add(target);
-    moveTargetToDistance(targetDistances[selectedDistanceIndex]);
+    moveTargetToDistance(initialDistance);
 
     // Store the initial position after it's set
     initialTargetPosition = target.position.clone();
@@ -904,6 +912,7 @@ function animate(timestamp, frame) {
 
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
+                isScoreboardVisible = true; // Show scoreboard when inspecting
                 target.userData.inScoringPosition = true;
                 // Move the visual group first, then sync the physics body to it.
                 target.position.copy(target.userData.scoringPosition);
@@ -982,6 +991,16 @@ function animate(timestamp, frame) {
                     bButtonPressed[i] = false;
                 }
 
+                // --- Thumbstick press to toggle scoreboard ---
+                if (controller.gamepad.buttons[3] && controller.gamepad.buttons[3].pressed) {
+                    if (!thumbstickPressed[i]) {
+                        thumbstickPressed[i] = true;
+                        isScoreboardVisible = !isScoreboardVisible;
+                    }
+                } else {
+                    thumbstickPressed[i] = false;
+                }
+
                 // --- Menu Toggle (Button 12) ---
                 if (controller.gamepad.buttons[12] && controller.gamepad.buttons[12].pressed) {
                     if (!button12Pressed[i]) {
@@ -1054,53 +1073,56 @@ function animate(timestamp, frame) {
         }
     }
 
+
+    if (scoreboard && scoreboard.getMesh()) {
+        scoreboard.getMesh().visible = isScoreboardVisible;
+    }
+
     // --- Target Motion Logic ---
     if (targetMotionState !== 'Still' && target && initialTargetPosition && target.userData.body) {
         const time = performance.now() / 1000; // Time in seconds
-        const speedMap = { Slow: 0.5, Medium: 1, Fast: 2, Random: 1 };
-        let speed = speedMap[targetMotionSpeed] || 1;
+        const speedMap = { Slow: 0.5, Medium: 1.0, Fast: 2.0 };
+        let speed;
+
+        if (targetMotionSpeed === 'Random') {
+            const slow = speedMap.Slow;
+            const fast = speedMap.Fast;
+            const speedRange = (fast - slow) / 2;
+            const midSpeed = slow + speedRange;
+            speed = midSpeed + Math.sin(time * 0.1) * speedRange;
+        } else {
+            speed = speedMap[targetMotionSpeed] || 1.0;
+        }
 
         const newPosition = initialTargetPosition.clone();
 
         switch (targetMotionState) {
             case 'Left & Right':
-                // Oscillate -1m to +1m on the X axis
                 newPosition.x += Math.sin(time * speed);
                 break;
             case 'Up & Down':
-                // Oscillate 0 to +2m on the Y axis
                 newPosition.y += 1 + Math.sin(time * speed);
                 break;
             case 'Random':
-                // Update angles for smooth, non-repeating motion
-                motionTheta += Math.sin(time * speed * 0.2) * 0.005;
-                motionPhi += Math.sin(time * speed * 0.3) * 0.003;
-
-                // Clamp phi to prevent going behind the player or too high/low
-                motionPhi = Math.max(0.4, Math.min(Math.PI - 0.4, motionPhi));
-
-                const distance = target.userData.shootingPosition.length(); // Use the set range
+                motionTheta += time * speed * 0.05; // Slower, more deliberate rotation
+                motionPhi += Math.cos(time * speed * 0.03) * 0.002; // Very gentle vertical bob
+                const distance = initialTargetPosition.length();
                 newPosition.setFromSphericalCoords(distance, motionPhi, motionTheta);
-                newPosition.add(camera.position); // Center on the player
-
-                // Ensure target doesn't go below the floor
-                if (newPosition.y < floorBody.translation().y + 0.5) {
+                if (floorBody && newPosition.y < floorBody.translation().y + 0.5) {
                     newPosition.y = floorBody.translation().y + 0.5;
                 }
                 break;
         }
 
-        // Update both the visual mesh and the physics body
         target.position.copy(newPosition);
         target.userData.body.setNextKinematicTranslation(newPosition, true);
-
-        // Make the target always face the player
         target.lookAt(camera.position);
         target.userData.body.setNextKinematicRotation(target.quaternion, true);
     }
 
 
     if (gameState === GameState.RESETTING) {
+        isScoreboardVisible = false;
         cleanupRound();
         gameState = GameState.SHOOTING;
         console.log("Returning to SHOOTING state.");
@@ -1172,51 +1194,29 @@ if (bowController) {
         const { forward: localForward, nock: localNock, length: arrowLength } = arrowTemplate.userData;
         offsetDirection = (bowController.userData.id === 0) ? 1 : -1; // Left hand is 0, right is 1
         LOCAL_LEFT = new THREE.Vector3(offsetDirection, 0, 0);
-        console.log(offsetDirection);
-
-        // 2. Transform the local "left" vector into a world-space direction.
-
-
-
-
 
         const worldLeftDirection = LOCAL_LEFT.clone().applyQuaternion(bowHand.quaternion);
 
-        // 3. Calculate the arrow rest position by starting at the bow hand and moving along the new direction.
         const arrowRestPosition = new THREE.Vector3()
             .copy(bowHand.position)
             .add(worldLeftDirection.multiplyScalar(OFFSET_DISTANCE));
 
-        // 2. Calculate the direction from the arrow hand to the arrow rest.
         const directionToRest = new THREE.Vector3().subVectors(arrowRestPosition, arrowHand.position);
-
-        // 3. The actual draw direction is from the arrow rest back towards the arrow hand.
         const drawDirection = directionToRest.clone().negate().normalize();
-
-        // 4. Calculate and clamp the draw distance.
         const drawDistance = directionToRest.length();
         const clampedDrawDistance = Math.min(drawDistance, arrowLength);
-
-        // 5. Calculate the clamped nock position. It's pulled back from the arrow rest along the draw direction.
         const clampedNockPosition = new THREE.Vector3().copy(arrowRestPosition).add(drawDirection.clone().multiplyScalar(clampedDrawDistance));
 
-        // 6. The arrow's rotation is based on pointing from the nock to the rest.
         const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, drawDirection.clone().negate());
         mesh.quaternion.copy(rotation);
 
-        // 7. Calculate the rotated nock offset from the arrow's origin.
         const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
-
-        // 8. Set the arrow's final position. Its origin is the nock's position minus the offset.
         mesh.position.copy(clampedNockPosition).sub(rotatedNockOffset);
 
-        // 9. Update the physics body to match the visual mesh.
         arrowBody.setNextKinematicTranslation(mesh.position);
         arrowBody.setNextKinematicRotation(mesh.quaternion);
 
-        // 10. The bowstring should connect to the nock's world position.
         arrowObject.nockPosition = clampedNockPosition;
-
     } else if (arrowObject) {
         arrowObject.nockPosition = null;
     }
