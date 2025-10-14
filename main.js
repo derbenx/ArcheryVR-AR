@@ -1092,7 +1092,7 @@ function animate(timestamp, frame) {
     // --- Target Motion Logic ---
     if (gameState === GameState.SHOOTING && targetMotionState !== 'Still' && target && initialTargetPosition && target.userData.body) {
         const time = performance.now() / 1000; // Time in seconds
-        const speedMap = { Slow: 0.5, Medium: 1.0, Fast: 2.0 };
+        const speedMap = { Slow: 0.125, Medium: 0.25, Fast: 0.5 };
         let speed;
 
         if (targetMotionSpeed === 'Random') {
@@ -1121,7 +1121,9 @@ function animate(timestamp, frame) {
                 if (elapsedTime >= randomMotionDuration) {
                     // Start a new movement
                     randomMotionStartTime = currentTime;
-                    randomMotionDuration = Math.random() * 4 + 3; // Move for 3-7 seconds
+                    // Base duration of 5-10 seconds, scaled by the current speed setting.
+                    // Slower speed setting => higher duration => slower movement.
+                    randomMotionDuration = (Math.random() * 5 + 5) / speed;
                     randomMotionStartPosition.copy(target.position);
 
                     // Pick a new random target position within a box around the initial position
