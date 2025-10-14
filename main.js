@@ -323,6 +323,10 @@ let targetMotionSpeed = 'Medium'; // Slow, Medium, Fast, Random
 let initialTargetPosition = null;
 let motionTheta = 0;
 let motionPhi = Math.PI / 2;
+let randomMotionTargetPosition = new THREE.Vector3();
+let randomMotionStartPosition = new THREE.Vector3();
+let randomMotionStartTime = 0;
+let randomMotionDuration = 0;
 
 // --- Scoreboard State ---
 let isScoreboardVisible = true;
@@ -605,7 +609,14 @@ async function placeScene(floorY) {
                     { name: "Still", action: () => { targetMotionState = 'Still'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
                     { name: "Left & Right", action: () => { targetMotionState = 'Left & Right'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
                     { name: "Up & Down", action: () => { targetMotionState = 'Up & Down'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
-                    { name: "Random", action: () => { targetMotionState = 'Random'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } }
+                    { name: "Random", action: () => {
+                        targetMotionState = 'Random';
+                        if(target && initialTargetPosition) {
+                            target.position.copy(initialTargetPosition);
+                            // Reset the start time to force an immediate recalculation of the random path
+                            randomMotionStartTime = 0;
+                        }
+                    } }
                 ]
             },
             speed: {
@@ -1104,12 +1115,32 @@ function animate(timestamp, frame) {
                 newPosition.y += 1 + Math.sin(time * speed);
                 break;
             case 'Random':
-                motionTheta += time * speed * 0.005; // Slower, more deliberate rotation
-                motionPhi += Math.cos(time * speed * 0.03) * 0.002; // Very gentle vertical bob
-                const distance = initialTargetPosition.length();
-                newPosition.setFromSphericalCoords(distance, motionPhi, motionTheta);
-                if (floorBody && newPosition.y < floorBody.translation().y + 0.5) {
-                    newPosition.y = floorBody.translation().y + 0.5;
+                const currentTime = performance.now();
+                const elapsedTime = (currentTime - randomMotionStartTime) / 1000; // in seconds
+
+                if (elapsedTime >= randomMotionDuration) {
+                    // Start a new movement
+                    randomMotionStartTime = currentTime;
+                    randomMotionDuration = Math.random() * 4 + 3; // Move for 3-7 seconds
+                    randomMotionStartPosition.copy(target.position);
+
+                    // Pick a new random target position within a box around the initial position
+                    const moveArea = new THREE.Box3(
+                        new THREE.Vector3(-2, 1, -0.5),
+                        new THREE.Vector3(2, 2.5, 0.5)
+                    );
+                    randomMotionTargetPosition.set(
+                        THREE.MathUtils.lerp(moveArea.min.x, moveArea.max.x, Math.random()),
+                        THREE.MathUtils.lerp(moveArea.min.y, moveArea.max.y, Math.random()),
+                        THREE.MathUtils.lerp(moveArea.min.z, moveArea.max.z, Math.random())
+                    ).add(initialTargetPosition);
+
+                } else {
+                    // Interpolate to the target position
+                    const progress = elapsedTime / randomMotionDuration;
+                    // Use an ease-in-out function for smoother start and end
+                    const easeProgress = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                    newPosition.lerpVectors(randomMotionStartPosition, randomMotionTargetPosition, easeProgress);
                 }
                 break;
         }
