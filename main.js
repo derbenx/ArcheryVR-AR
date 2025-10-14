@@ -972,8 +972,22 @@ if (bowController) {
 
     firedArrows.forEach(obj => {
         if (obj.body) {
-            // Always update the mesh position and rotation from the physics body
+            // Always update the mesh position from the physics body
             obj.mesh.position.copy(obj.body.translation());
+
+            const velocity = obj.body.linvel();
+            const speedSq = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
+
+            // For arrows in flight with significant velocity, align their visual mesh with the velocity vector
+            if (obj.body.isDynamic() && speedSq > 0.01 && arrowTemplate) {
+                const worldVelocity = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
+                const localForward = arrowTemplate.userData.forward;
+
+                // Create a quaternion that rotates the local forward vector to align with the world velocity
+                const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldVelocity);
+                obj.body.setRotation(rotation, true);
+            }
+            // Always update the mesh quaternion from the physics body
             obj.mesh.quaternion.copy(obj.body.rotation());
         }
     });
