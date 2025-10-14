@@ -627,7 +627,7 @@ async function placeScene(floorY) {
     const initialDistance = targetDistances[0]; // Default to the first distance
     target = new THREE.Group();
     target.userData.shootingPosition = new THREE.Vector3(0, 1.6, -initialDistance);
-    target.userData.scoringPosition = new THREE.Vector3(0, 1.6, -1.2);
+    target.userData.scoringPosition = new THREE.Vector3(0, 1.2, -1.2);
     target.userData.inScoringPosition = false;
 
     // Create a single, kinematic rigid body for the entire target.
@@ -1079,7 +1079,7 @@ function animate(timestamp, frame) {
     }
 
     // --- Target Motion Logic ---
-    if (targetMotionState !== 'Still' && target && initialTargetPosition && target.userData.body) {
+    if (gameState === GameState.SHOOTING && targetMotionState !== 'Still' && target && initialTargetPosition && target.userData.body) {
         const time = performance.now() / 1000; // Time in seconds
         const speedMap = { Slow: 0.5, Medium: 1.0, Fast: 2.0 };
         let speed;
@@ -1104,7 +1104,7 @@ function animate(timestamp, frame) {
                 newPosition.y += 1 + Math.sin(time * speed);
                 break;
             case 'Random':
-                motionTheta += time * speed * 0.05; // Slower, more deliberate rotation
+                motionTheta += time * speed * 0.005; // Slower, more deliberate rotation
                 motionPhi += Math.cos(time * speed * 0.03) * 0.002; // Very gentle vertical bob
                 const distance = initialTargetPosition.length();
                 newPosition.setFromSphericalCoords(distance, motionPhi, motionTheta);
