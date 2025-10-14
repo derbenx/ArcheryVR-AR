@@ -210,30 +210,6 @@ class Menu {
     }
 }
 
-class RapierDebugRenderer {
-  mesh
-  world
-  enabled = true
-
-  constructor(scene, world) {
-    this.world = world
-    this.mesh = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffffff, vertexColors: true }))
-    this.mesh.frustumCulled = false
-    scene.add(this.mesh)
-  }
-
-  update() {
-    if (this.enabled) {
-      const { vertices, colors } = this.world.debugRender()
-      this.mesh.geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3))
-      this.mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4))
-      this.mesh.visible = true
-    } else {
-      this.mesh.visible = false
-    }
-  }
-}
-
 function moveTargetToDistance(distance) {
     if (!target || !target.userData.body) return;
 
@@ -302,7 +278,6 @@ let eventQueue;
 let colliderToScoreMap;
 
 // --- Controller and State ---
-let rapierDebugRenderer;
 let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
@@ -333,7 +308,6 @@ async function init() {
     world.integrationParameters.dt = 1 / 120; // Use a smaller timestep for more accurate physics
     eventQueue = new RAPIER.EventQueue(true);
     colliderToScoreMap = new Map();
-    rapierDebugRenderer = new RapierDebugRenderer(scene, world);
 
     const arButton = ARButton.createButton(renderer, { requiredFeatures: ['local-floor', 'plane-detection'] });
     document.body.appendChild(arButton);
@@ -419,11 +393,9 @@ function onSelectStart(event) {
             newArrowMesh.visible = true;
             scene.add(newArrowMesh);
 
-            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setCcdEnabled(true);
+            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
             const body = world.createRigidBody(arrowBodyDesc);
-            const vertices = arrowTemplate.geometry.attributes.position.array;
-            const indices = arrowTemplate.geometry.index.array;
-            const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices)
+            const colliderDesc = RAPIER.ColliderDesc.cuboid(0.02, 0.02, arrowTemplate.userData.length / 2) // Rapier cuboids are half-extents
                 .setMass(0.1)
                 .setCollisionGroups(ARROW_GROUP_FILTER)
                 .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
@@ -522,6 +494,7 @@ console.log(target);
     bow = gltf.scene.getObjectByName('bow');
     if (bow) {
         scene.add(bow);
+        bow.visible = false;
         //bow.geometry.computeBoundingBox();
         const bowBox = bow.geometry.boundingBox;
         //const bowBox = new THREE.Box3().setFromObject(bow);
@@ -539,6 +512,7 @@ console.log(target);
         stringGeometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
         bowstring = new THREE.Line(stringGeometry, stringMaterial);
         scene.add(bowstring);
+        bowstring.visible = false;
     }
 
     const arrowMesh = gltf.scene.getObjectByName('arrow');
@@ -763,9 +737,17 @@ function animate(timestamp, frame) {
             if (controller && controller.gamepad) {
                 // --- Grip button for holding the bow ---
                 if (controller.gamepad.buttons[1].pressed) {
-                    if (!bowController) bowController = controller;
+                    if (!bowController) {
+                        bowController = controller;
+                        if (bow) bow.visible = true;
+                        if (bowstring) bowstring.visible = true;
+                    }
                 } else {
-                    if (bowController === controller) bowController = null;
+                    if (bowController === controller) {
+                        bowController = null;
+                        if (bow) bow.visible = false;
+                        if (bowstring) bowstring.visible = false;
+                    }
                 }
 
                 // --- 'A' button for scoring ---
@@ -985,10 +967,11 @@ if (bowController) {
 
                 // Create a quaternion that rotates the local forward vector to align with the world velocity
                 const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldVelocity);
-                obj.body.setRotation(rotation, true);
+                obj.mesh.quaternion.copy(rotation);
+            } else {
+                // For all other cases (e.g., stuck, tumbling slowly), just use the rotation from the physics engine
+                obj.mesh.quaternion.copy(obj.body.rotation());
             }
-            // Always update the mesh quaternion from the physics body
-            obj.mesh.quaternion.copy(obj.body.rotation());
         }
     });
 
@@ -1013,7 +996,6 @@ if (bowController) {
         bowstring.geometry.computeBoundingSphere();
     }
 
-    rapierDebugRenderer.update();
     renderer.render(scene, camera);
 }
 
