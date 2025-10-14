@@ -656,8 +656,8 @@ async function placeScene(floorY) {
 
     const initialDistance = targetDistances[0]; // Default to the first distance
     target = new THREE.Group();
-    target.userData.shootingPosition = new THREE.Vector3(0, 1.6, -initialDistance);
-    target.userData.scoringPosition = new THREE.Vector3(0, 1.6, -1.2);
+    target.userData.shootingPosition = new THREE.Vector3(0, 0.5, -initialDistance);
+    target.userData.scoringPosition = new THREE.Vector3(0, 0.5, -1.2);
     target.userData.inScoringPosition = false;
 
     // Create a single, kinematic rigid body for the entire target.
@@ -946,6 +946,7 @@ function animate(timestamp, frame) {
                 target.userData.inScoringPosition = true;
                 // Move the visual group first, then sync the physics body to it.
                 target.position.copy(target.userData.scoringPosition);
+                    target.rotation.set(0, 0, 0); // Reset rotation
                 if (target.userData.body) {
                     target.userData.body.setNextKinematicTranslation(target.position, true);
                     target.userData.body.setNextKinematicRotation(target.quaternion, true);
@@ -1166,8 +1167,8 @@ function animate(timestamp, frame) {
                 newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
 
                 const distance = -target.userData.shootingPosition.z;
-                const directionFromCamera = newPosition.clone().sub(new THREE.Vector3(0, 0, 0)).normalize();
-                newPosition.copy(new THREE.Vector3(0, 0, 0)).addScaledVector(directionFromCamera, distance);
+                const directionFromOrigin = newPosition.clone().normalize();
+                newPosition.copy(directionFromOrigin).multiplyScalar(distance);
 
                 if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
                     newPosition.y = floorBody.translation().y + 1.0;
