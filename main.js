@@ -409,7 +409,7 @@ function onSelectStart(event) {
             const distance = controller.position.distanceTo(otherController.position);
 
             // Spawn only if hands are far enough apart
-            if (distance > 0.10) {
+            if (distance > 0.5) {
                 if (!arrowTemplate) return;
 
                 const newArrowMesh = arrowTemplate.clone();
@@ -793,12 +793,13 @@ function animate(timestamp, frame) {
             if (controller && controller.gamepad) {
                 // --- Grip button for holding the bow ---
                 if (controller.gamepad.buttons[1].pressed) {
-                    if (!bowController) {
+                    // Prevent spawning bow if this hand is holding an arrow
+                    if (!bowController && controller !== arrowController) {
                         // Check distance between hands before spawning the bow
                         const otherController = renderer.xr.getController(1 - i); // Get the other controller
                         if (otherController) {
                             const distance = controller.position.distanceTo(otherController.position);
-                            if (distance > 0.10) { // 10cm threshold
+                            if (distance > 0.5) { // 50cm threshold
                                 bowController = controller;
                                 if (bow) bow.visible = true;
                                 if (bowstring) bowstring.visible = true;
@@ -963,7 +964,7 @@ if (bowController) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const distance = bowHand.position.distanceTo(arrowHand.position);
 
-        if (distance < 0.05) { // 5cm threshold
+        if (distance < 0.1) { // 10cm threshold
             console.log("Nocking arrow by proximity.");
             arrowObject.isNocked = true;
             // Detach arrow from controller and add to scene to allow independent drawing motion.
