@@ -1092,7 +1092,7 @@ function animate(timestamp, frame) {
     // --- Target Motion Logic ---
     if (gameState === GameState.SHOOTING && targetMotionState !== 'Still' && target && initialTargetPosition && target.userData.body) {
         const time = performance.now() / 1000; // Time in seconds
-        const speedMap = { Slow: 0.125, Medium: 0.25, Fast: 0.5 };
+        const speedMap = { Slow: 0.5, Medium: 1.0, Fast: 2.0 };
         let speed;
 
         if (targetMotionSpeed === 'Random') {
@@ -1116,34 +1116,37 @@ function animate(timestamp, frame) {
                 break;
             case 'Random':
                 const currentTime = performance.now();
-                const elapsedTime = (currentTime - randomMotionStartTime) / 1000; // in seconds
+                const elapsedTime = (currentTime - randomMotionStartTime) / 1000;
 
                 if (elapsedTime >= randomMotionDuration) {
-                    // Start a new movement
                     randomMotionStartTime = currentTime;
-                    // Base duration of 5-10 seconds, scaled by the current speed setting.
-                    // Slower speed setting => higher duration => slower movement.
-                    randomMotionDuration = (Math.random() * 5 + 5) / speed;
+                    // Slow speed should result in a long duration (20-30s)
+                    // Fast speed should result in a short duration (5-7.5s)
+                    const baseDuration = (Math.random() * 10 + 10);
+                    randomMotionDuration = baseDuration / speed;
+
                     randomMotionStartPosition.copy(target.position);
 
-                    // Pick a new random target position within a box around the initial position
-                    const moveArea = new THREE.Box3(
-                        new THREE.Vector3(-2, 1, -0.5),
-                        new THREE.Vector3(2, 2.5, 0.5)
-                    );
-                    randomMotionTargetPosition.set(
-                        THREE.MathUtils.lerp(moveArea.min.x, moveArea.max.x, Math.random()),
-                        THREE.MathUtils.lerp(moveArea.min.y, moveArea.max.y, Math.random()),
-                        THREE.MathUtils.lerp(moveArea.min.z, moveArea.max.z, Math.random())
-                    ).add(initialTargetPosition);
+                    // Pick a new random point on the surface of the sphere
+                    const distance = -target.userData.shootingPosition.z;
+                    // Phi is the vertical angle. (PI/2 is the horizon). We want it between ~30deg and 90deg.
+                    const phi = (Math.random() * (Math.PI / 3)) + (Math.PI / 3);
+                    // Theta is the horizontal angle.
+                    const theta = (Math.random() - 0.5) * Math.PI * 2; // Full 360 degree range
 
-                } else {
-                    // Interpolate to the target position
-                    const progress = elapsedTime / randomMotionDuration;
-                    // Use an ease-in-out function for smoother start and end
-                    const easeProgress = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-                    newPosition.lerpVectors(randomMotionStartPosition, randomMotionTargetPosition, easeProgress);
+                    randomMotionTargetPosition.setFromSphericalCoords(distance, phi, theta);
+                    randomMotionTargetPosition.add(camera.position); // Make it camera-centric
+
+                    // Clamp the height to prevent the target from going below the floor
+                    if (floorBody && randomMotionTargetPosition.y < floorBody.translation().y + 1.0) {
+                        randomMotionTargetPosition.y = floorBody.translation().y + 1.0;
+                    }
                 }
+
+                const progress = Math.min(elapsedTime / randomMotionDuration, 1.0);
+                const easeProgress = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+                newPosition.lerpVectors(randomMotionStartPosition, randomMotionTargetPosition, easeProgress);
                 break;
         }
 
