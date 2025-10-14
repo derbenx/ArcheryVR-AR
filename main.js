@@ -321,6 +321,8 @@ let currentMenuNode = null;
 let targetMotionState = 'Still'; // Still, Left & Right, Up & Down, Random
 let targetMotionSpeed = 'Medium'; // Slow, Medium, Fast, Random
 let initialTargetPosition = null;
+let motionTheta = 0;
+let motionPhi = Math.PI / 2;
 
 // --- Game State Machine ---
 const GameState = {
@@ -1070,15 +1072,31 @@ function animate(timestamp, frame) {
                 newPosition.y += 1 + Math.sin(time * speed);
                 break;
             case 'Random':
-                // Combine sine waves for a less predictable path
-                newPosition.x += Math.sin(time * speed * 0.7) * 0.6;
-                newPosition.y += Math.sin(time * speed * 1.1) * 0.8 + 1;
+                // Update angles for smooth, non-repeating motion
+                motionTheta += Math.sin(time * speed * 0.2) * 0.005;
+                motionPhi += Math.sin(time * speed * 0.3) * 0.003;
+
+                // Clamp phi to prevent going behind the player or too high/low
+                motionPhi = Math.max(0.4, Math.min(Math.PI - 0.4, motionPhi));
+
+                const distance = target.userData.shootingPosition.length(); // Use the set range
+                newPosition.setFromSphericalCoords(distance, motionPhi, motionTheta);
+                newPosition.add(camera.position); // Center on the player
+
+                // Ensure target doesn't go below the floor
+                if (newPosition.y < floorBody.translation().y + 0.5) {
+                    newPosition.y = floorBody.translation().y + 0.5;
+                }
                 break;
         }
 
         // Update both the visual mesh and the physics body
         target.position.copy(newPosition);
         target.userData.body.setNextKinematicTranslation(newPosition, true);
+
+        // Make the target always face the player
+        target.lookAt(camera.position);
+        target.userData.body.setNextKinematicRotation(target.quaternion, true);
     }
 
 
