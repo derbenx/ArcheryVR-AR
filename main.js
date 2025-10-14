@@ -263,7 +263,7 @@ class RapierDebugRenderer {
 function moveTargetToDistance(distance) {
     if (!target || !target.userData.body) return;
 
-    const newPosition = new THREE.Vector3(0, initialTargetPosition ? initialTargetPosition.y : 1.6, -distance);
+    const newPosition = new THREE.Vector3(0, initialTargetPosition ? initialTargetPosition.y : 0.5, -distance);
 
     // Update the stored shooting position and the global initial position
     target.userData.shootingPosition.copy(newPosition);
