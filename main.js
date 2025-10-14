@@ -153,45 +153,69 @@ class Menu {
         this.texture.anisotropy = 16;
 
         const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, side: THREE.DoubleSide });
-        const geometry = new THREE.PlaneGeometry(0.5, 1); // Aspect ratio 1:2
+        const geometry = new THREE.PlaneGeometry(0.5, 1);
         this.mesh = new THREE.Mesh(geometry, material);
-        this.mesh.visible = false; // Initially hidden
+        this.mesh.visible = false;
     }
 
-    /**
-     * Draws the menu options on the canvas.
-     * @param {string[]} options - The array of text strings to display.
-     * @param {number} highlightedIndex - The index of the option to highlight.
-     */
-    draw(options, highlightedIndex) {
+    draw(menuNode, highlightedIndex) {
         const ctx = this.context;
         const w = this.canvas.width;
         const h = this.canvas.height;
+        const options = menuNode.options.map(opt => opt.name);
 
         // Background
-        ctx.fillStyle = 'rgba(0, 51, 102, 0.8)'; // Semi-transparent blue
+        ctx.fillStyle = 'rgba(0, 51, 102, 0.8)';
         ctx.fillRect(0, 0, w, h);
         ctx.strokeStyle = 'white';
         ctx.lineWidth = 5;
         ctx.strokeRect(0, 0, w, h);
 
-
-        // Text properties
-        ctx.font = 'bold 60px sans-serif';
+        // Title
+        ctx.font = 'bold 50px sans-serif';
+        ctx.fillStyle = 'white';
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.fillText(menuNode.title, w / 2, 70);
 
-        const lineHeight = h / (options.length + 1); // Add padding
+        // Options
+        ctx.font = 'bold 60px sans-serif';
+        ctx.textBaseline = 'middle';
+        const lineHeight = (h - 150) / (options.length);
 
         options.forEach((option, i) => {
-            const y = lineHeight * (i + 1);
-
-            if (i === highlightedIndex) {
-                ctx.fillStyle = '#FFD700'; // Gold for highlighted
-            } else {
-                ctx.fillStyle = 'white'; // White for others
-            }
+            const y = 150 + (lineHeight * i) + (lineHeight / 2);
+            ctx.fillStyle = (i === highlightedIndex) ? '#FFD700' : 'white';
             ctx.fillText(option, w / 2, y);
+        });
+
+        this.texture.needsUpdate = true;
+    }
+
+    drawHelp(helpNode) {
+        const ctx = this.context;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        // Background
+        ctx.fillStyle = 'rgba(0, 51, 102, 0.8)';
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 5;
+        ctx.strokeRect(0, 0, w, h);
+
+        // Title
+        ctx.font = 'bold 50px sans-serif';
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'center';
+        ctx.fillText(helpNode.title, w / 2, 60);
+
+        // Help Text
+        ctx.font = '36px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        const lineHeight = 45;
+        helpNode.lines.forEach((line, i) => {
+            ctx.fillText(line, 40, 120 + i * lineHeight);
         });
 
         this.texture.needsUpdate = true;
@@ -285,7 +309,11 @@ let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for hist
 let menu;
 let isMenuOpen = false;
 const targetDistances = [3, 6, 9, 15, 20, 25, 30, 40, 50];
-let selectedDistanceIndex = 0;
+let selectedDistanceIndex = 0; // This will be deprecated but kept for now.
+let selectedMenuIndex = 0;
+
+let menuTree; // Will be defined in placeScene
+let currentMenuNode = null;
 
 // --- Game State Machine ---
 const GameState = {
@@ -307,6 +335,7 @@ let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
 let aButtonPressed = [false, false]; // To track 'A' button state for each controller
+let bButtonPressed = [false, false]; // To track 'B' button state for each controller
 let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
 let button12Pressed = [false, false]; // To track button 12 state for each controller
 
@@ -393,11 +422,34 @@ function onSelectStart(event) {
 
     // --- Menu Selection ---
     if (isMenuOpen) {
-        const newDistance = targetDistances[selectedDistanceIndex];
-        moveTargetToDistance(newDistance);
-        console.log(`Target distance set to: ${newDistance}m`);
-        isMenuOpen = false;
-        menu.hide();
+        if (!currentMenuNode) return;
+
+        // If on an info screen like Help, any button press closes it.
+        if (currentMenuNode.type === 'info') {
+            currentMenuNode = menuTree.submenus[currentMenuNode.parent];
+            selectedMenuIndex = 0;
+            menu.draw(currentMenuNode, selectedMenuIndex);
+            return;
+        }
+
+        const selectedOption = currentMenuNode.options[selectedMenuIndex];
+        if (selectedOption) {
+            if (selectedOption.submenu) {
+                // Navigate to submenu
+                currentMenuNode = menuTree.submenus[selectedOption.submenu];
+                selectedMenuIndex = 0;
+                if (currentMenuNode.type === 'info') {
+                    menu.drawHelp(currentMenuNode);
+                } else {
+                    menu.draw(currentMenuNode, selectedMenuIndex);
+                }
+            } else if (selectedOption.action) {
+                // Execute action and close menu
+                selectedOption.action();
+                isMenuOpen = false;
+                menu.hide();
+            }
+        }
         return; // Prevent other actions
     }
 
@@ -484,6 +536,65 @@ async function placeScene(floorY) {
     const floorColliderDesc = RAPIER.ColliderDesc.cuboid(100, 0.1, 100).setCollisionGroups(FLOOR_GROUP_FILTER);
     const floorCollider = world.createCollider(floorColliderDesc, floorBody);
     floorCollider.userData = { type: 'floor' };
+
+    // --- Menu Tree Definition ---
+    menuTree = {
+        title: "Main Menu",
+        options: [
+            { name: "Settings", submenu: "settings" },
+            { name: "Help", submenu: "help" }
+        ],
+        submenus: {
+            settings: {
+                title: "Settings",
+                parent: "root",
+                options: [
+                    { name: "Range", submenu: "range" },
+                    { name: "Motion", submenu: "motion" }
+                ]
+            },
+            help: {
+                title: "Help",
+                parent: "root",
+                type: "info", // Special type for the drawHelp method
+                lines: [
+                    "CONTROLS:",
+                    "Grip: Hold Bow",
+                    "Trigger: Spawn/Shoot Arrow",
+                    "A Button: Confirm Menu",
+                    "B Button: Cancel/Back Menu",
+                    "Joystick: Navigate Menu",
+                    "",
+                    "PROCEDURE:",
+                    "1. Hold Grip for Bow.",
+                    "2. Press Trigger for Arrow.",
+                    "3. Bring hands together to nock.",
+                    "4. Release Trigger to fire."
+                ]
+            },
+            range: {
+                title: "Set Range",
+                parent: "settings",
+                options: targetDistances.map(d => ({
+                    name: `${d} meters`,
+                    action: () => moveTargetToDistance(d)
+                }))
+            },
+            motion: {
+                title: "Set Motion",
+                parent: "settings",
+                options: [
+                    { name: "Still", action: () => console.log("Target motion: Still") },
+                    { name: "Left & Right", action: () => console.log("Target motion: Left & Right") },
+                    { name: "Up & Down", action: () => console.log("Target motion: Up & Down") },
+                    { name: "Random", action: () => console.log("Target motion: Random") }
+                ]
+            }
+        }
+    };
+    // Add a 'root' reference for easier navigation
+    menuTree.submenus.root = menuTree;
+
 
     const initialDistance = targetDistances[selectedDistanceIndex];
     target = new THREE.Group();
@@ -814,36 +925,60 @@ function animate(timestamp, frame) {
                     }
                 }
 
-                // --- 'A' button for scoring ---
-                if (gameState === GameState.INSPECTING && controller.gamepad.buttons[4] && controller.gamepad.buttons[4].pressed) {
+                // --- 'A' button for menu confirmation or scoring ---
+                if (controller.gamepad.buttons[4] && controller.gamepad.buttons[4].pressed) {
                     if (!aButtonPressed[i]) {
                         aButtonPressed[i] = true;
-                        gameState = GameState.RESETTING;
-                        console.log("Entering RESETTING state.");
+                        if (isMenuOpen) {
+                            // Re-use the same logic as onSelectStart for menu confirmation
+                            onSelectStart({ target: controller });
+                        } else if (gameState === GameState.INSPECTING) {
+                            gameState = GameState.RESETTING;
+                            console.log("Entering RESETTING state.");
+                        }
                     }
                 } else {
                     aButtonPressed[i] = false;
                 }
 
+                // --- 'B' button for menu back/cancel ---
+                if (controller.gamepad.buttons[5] && controller.gamepad.buttons[5].pressed) {
+                    if (!bButtonPressed[i]) {
+                        bButtonPressed[i] = true;
+                        if (isMenuOpen && currentMenuNode && currentMenuNode.parent) {
+                            currentMenuNode = menuTree.submenus[currentMenuNode.parent];
+                            selectedMenuIndex = 0;
+                            menu.draw(currentMenuNode, selectedMenuIndex);
+                            console.log(`Navigated back to ${currentMenuNode.title}`);
+                        } else if (isMenuOpen) {
+                            // At root, B closes the menu
+                            isMenuOpen = false;
+                            menu.hide();
+                        }
+                    }
+                } else {
+                    bButtonPressed[i] = false;
+                }
+
                 // --- Menu Toggle (Button 12) ---
-                // This button is often the 'home' or 'system' button on many controllers
                 if (controller.gamepad.buttons[12] && controller.gamepad.buttons[12].pressed) {
                     if (!button12Pressed[i]) {
                         button12Pressed[i] = true;
                         isMenuOpen = !isMenuOpen;
 
                         if (isMenuOpen) {
+                            // Reset to the main menu
+                            currentMenuNode = menuTree;
+                            selectedMenuIndex = 0;
+
                             const menuMesh = menu.getMesh();
-                            // Position the menu in front of the camera
                             const cameraDirection = new THREE.Vector3();
                             camera.getWorldDirection(cameraDirection);
                             const distance = 1.5;
                             menuMesh.position.copy(camera.position).add(cameraDirection.multiplyScalar(distance));
                             menuMesh.quaternion.copy(camera.quaternion);
 
-                            // Initial draw
-                            const distanceOptions = targetDistances.map(d => `${d} meters`);
-                            menu.draw(distanceOptions, selectedDistanceIndex);
+                            menu.draw(currentMenuNode, selectedMenuIndex);
                             menu.show();
                             console.log("Menu opened.");
                         } else {
@@ -858,47 +993,35 @@ function animate(timestamp, frame) {
 
                 // --- Joystick Navigation (History and Menu) ---
                 if (controller.gamepad.axes.length > 3) {
-                    const joystickY = controller.gamepad.axes[3]; // Typically the Y-axis of the right stick
+                    const joystickY = controller.gamepad.axes[3];
 
                     if (Math.abs(joystickY) > 0.8) {
                         if (!joystickMoved[i]) {
                             joystickMoved[i] = true;
-                            const distanceOptions = targetDistances.map(d => `${d} meters`);
 
-                            if (isMenuOpen) {
+                            if (isMenuOpen && currentMenuNode && currentMenuNode.type !== 'info') {
                                 // --- Menu Navigation ---
+                                const numOptions = currentMenuNode.options.length;
                                 if (joystickY < 0) { // Up
-                                    selectedDistanceIndex = Math.max(0, selectedDistanceIndex - 1);
+                                    selectedMenuIndex = (selectedMenuIndex - 1 + numOptions) % numOptions;
                                 } else { // Down
-                                    selectedDistanceIndex = Math.min(distanceOptions.length - 1, selectedDistanceIndex + 1);
+                                    selectedMenuIndex = (selectedMenuIndex + 1) % numOptions;
                                 }
-                                menu.draw(distanceOptions, selectedDistanceIndex);
-                                console.log(`Selected distance index: ${selectedDistanceIndex}`);
-
-                            } else {
+                                menu.draw(currentMenuNode, selectedMenuIndex);
+                                console.log(`Selected menu index: ${selectedMenuIndex}`);
+                            } else if (!isMenuOpen) {
                                 // --- History Navigation ---
-                                if (joystickY < 0) { // Stick moved up
-                                    if (viewingGameIndex > -1) {
-                                        viewingGameIndex--;
-                                    } else if (gameHistory.length > 0) { // Wrap from current to last historical
-                                        viewingGameIndex = gameHistory.length - 1;
-                                    }
-                                } else { // Stick moved down
-                                    if (viewingGameIndex < gameHistory.length - 1) {
-                                        viewingGameIndex++;
-                                    } else if (viewingGameIndex !== -1) { // Wrap from last historical to current
-                                        viewingGameIndex = -1;
-                                    }
+                                if (joystickY < 0) { // Up
+                                    if (viewingGameIndex > -1) viewingGameIndex--;
+                                    else if (gameHistory.length > 0) viewingGameIndex = gameHistory.length - 1;
+                                } else { // Down
+                                    if (viewingGameIndex < gameHistory.length - 1) viewingGameIndex++;
+                                    else if (viewingGameIndex !== -1) viewingGameIndex = -1;
                                 }
-
-                                // Update scoreboard to show the selected game
-                                if (viewingGameIndex === -1) {
-                                    scoreboard.displayGame(currentGame);
-                                    console.log("Viewing current game");
-                                } else {
-                                    scoreboard.displayGame(gameHistory[viewingGameIndex]);
-                                    console.log(`Viewing historical game #${gameHistory[viewingGameIndex].gameNumber}`);
-                                }
+                                // Update scoreboard display
+                                const gameToShow = (viewingGameIndex === -1) ? currentGame : gameHistory[viewingGameIndex];
+                                scoreboard.displayGame(gameToShow);
+                                console.log(`Viewing game #${gameToShow.gameNumber}`);
                             }
                         }
                     } else {
