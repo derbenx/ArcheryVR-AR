@@ -323,10 +323,11 @@ let targetMotionSpeed = 'Medium'; // Slow, Medium, Fast, Random
 let initialTargetPosition = null;
 let motionTheta = 0;
 let motionPhi = Math.PI / 2;
-let randomMotionTargetPosition = new THREE.Vector3();
-let randomMotionStartPosition = new THREE.Vector3();
-let randomMotionStartTime = 0;
-let randomMotionDuration = 0;
+// New state for Qix-style motion
+let qixMotionDirection = new THREE.Vector3();
+let qixMotionDuration = 0;
+let qixMotionStartTime = 0;
+let lastTimestamp = 0;
 
 // --- Scoreboard State ---
 let isScoreboardVisible = true;
@@ -613,8 +614,9 @@ async function placeScene(floorY) {
                         targetMotionState = 'Random';
                         if(target && initialTargetPosition) {
                             target.position.copy(initialTargetPosition);
-                            // Reset the start time to force an immediate recalculation of the random path
-                            randomMotionStartTime = 0;
+                            // Reset the start time to force an immediate recalculation of the qix path
+                            qixMotionStartTime = 0;
+                            lastTimestamp = 0; // Also reset the timestamp for deltaTime calculation
                         }
                     } }
                 ]
@@ -1115,38 +1117,36 @@ function animate(timestamp, frame) {
                 newPosition.y += 1 + Math.sin(time * speed);
                 break;
             case 'Random':
-                const currentTime = performance.now();
-                const elapsedTime = (currentTime - randomMotionStartTime) / 1000;
+                const qixTime = time;
+                if (qixTime > qixMotionStartTime + qixMotionDuration) {
+                    qixMotionStartTime = qixTime;
+                    qixMotionDuration = Math.random() * 3 + 2; // Move for 2-5 seconds
 
-                if (elapsedTime >= randomMotionDuration) {
-                    randomMotionStartTime = currentTime;
-                    // Slow speed should result in a long duration (20-30s)
-                    // Fast speed should result in a short duration (5-7.5s)
-                    const baseDuration = (Math.random() * 10 + 10);
-                    randomMotionDuration = baseDuration / speed;
-
-                    randomMotionStartPosition.copy(target.position);
-
-                    // Pick a new random point on the surface of the sphere
-                    const distance = -target.userData.shootingPosition.z;
-                    // Phi is the vertical angle. (PI/2 is the horizon). We want it between ~30deg and 90deg.
-                    const phi = (Math.random() * (Math.PI / 3)) + (Math.PI / 3);
-                    // Theta is the horizontal angle.
-                    const theta = (Math.random() - 0.5) * Math.PI * 2; // Full 360 degree range
-
-                    randomMotionTargetPosition.setFromSphericalCoords(distance, phi, theta);
-                    randomMotionTargetPosition.add(camera.position); // Make it camera-centric
-
-                    // Clamp the height to prevent the target from going below the floor
-                    if (floorBody && randomMotionTargetPosition.y < floorBody.translation().y + 1.0) {
-                        randomMotionTargetPosition.y = floorBody.translation().y + 1.0;
-                    }
+                    qixMotionDirection.set(
+                        Math.random() - 0.5,
+                        Math.random() - 0.5,
+                        Math.random() - 0.5
+                    ).normalize();
                 }
 
-                const progress = Math.min(elapsedTime / randomMotionDuration, 1.0);
-                const easeProgress = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                const deltaTime = lastTimestamp > 0 ? (timestamp - lastTimestamp) / 1000 : 0;
+                lastTimestamp = timestamp;
 
-                newPosition.lerpVectors(randomMotionStartPosition, randomMotionTargetPosition, easeProgress);
+                // Use the correct 'speed' from the speedMap, not the 'time' variable
+                const qixSpeedFactor = 0.2;
+                const moveStep = qixSpeedFactor * speed * deltaTime;
+
+                // Start with the current position and move it
+                newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
+
+                // Project the new position back onto the sphere around the camera
+                const distance = -target.userData.shootingPosition.z;
+                const directionFromCamera = newPosition.clone().sub(camera.position).normalize();
+                newPosition.copy(camera.position).addScaledVector(directionFromCamera, distance);
+
+                if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
+                    newPosition.y = floorBody.translation().y + 1.0;
+                }
                 break;
         }
 
