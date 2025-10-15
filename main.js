@@ -146,7 +146,7 @@ class BowHUD {
     constructor() {
         this.canvas = document.createElement('canvas');
         this.canvas.width = 512; // A good resolution for clarity
-        this.canvas.height = 256;
+        this.canvas.height = 300; // Increased height for the new field
         this.context = this.canvas.getContext('2d');
 
         this.texture = new THREE.CanvasTexture(this.canvas);
@@ -154,8 +154,8 @@ class BowHUD {
         this.texture.anisotropy = 16;
 
         const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true });
-        // Aspect ratio is 2:1 (512x256), so the plane should be e.g., 0.4 x 0.2
-        const geometry = new THREE.PlaneGeometry(0.4, 0.2);
+        // Aspect ratio is 512:300, so the plane should be e.g., 0.4 x 0.234
+        const geometry = new THREE.PlaneGeometry(0.4, 0.234);
         this.mesh = new THREE.Mesh(geometry, material);
         this.mesh.visible = false; // Initially hidden
 
@@ -209,6 +209,10 @@ class BowHUD {
             const altitude = arrowData.altitude.toFixed(2);
             const maxAltitude = arrowData.maxAltitude.toFixed(2);
             ctx.fillText(`Altitude: ${altitude} m (Max: ${maxAltitude})`, 15, 155);
+
+            // --- Angle ---
+            const angle = arrowData.angle.toFixed(1);
+            ctx.fillText(`Angle: ${angle}°`, 15, 200);
         }
 
 
@@ -599,7 +603,8 @@ function onSelectStart(event) {
                     distance: 0,
                     altitude: 0,
                     maxAltitude: 0,
-                    isMoving: false
+                    isMoving: false,
+                    angle: 0
                 };
                 collider.userData = { type: 'arrow', arrow: arrowObject };
 
@@ -1424,6 +1429,10 @@ if (bowController) {
         arrowBody.setNextKinematicTranslation(mesh.position);
         arrowBody.setNextKinematicRotation(mesh.quaternion);
 
+        // Also update the angle for the HUD while nocked
+        const forwardVector = new THREE.Vector3(0, 0, -1).applyQuaternion(mesh.quaternion);
+        arrowObject.angle = Math.asin(forwardVector.y) * (180 / Math.PI);
+
         arrowObject.nockPosition = clampedNockPosition;
     } else if (arrowObject) {
         arrowObject.nockPosition = null;
@@ -1449,6 +1458,10 @@ if (bowController) {
             // For arrows in flight with significant velocity, align their visual mesh with the velocity vector
             if (obj.body.isDynamic() && speed > 0.1 && arrowTemplate) {
                 const worldVelocity = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
+
+                // Calculate angle
+                obj.angle = Math.asin(worldVelocity.y) * (180 / Math.PI);
+
                 const localForward = arrowTemplate.userData.forward;
 
                 // Create a quaternion that rotates the local forward vector to align with the world velocity
