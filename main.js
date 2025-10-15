@@ -394,6 +394,8 @@ let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for hist
 
 // --- HUD ---
 let bowHUD;
+let hudScores = [];
+let isHudVisible = true;
 
 // --- Menu ---
 let menu;
@@ -669,6 +671,7 @@ async function placeScene(floorY) {
         }
         options.push({ name: "Scoreboard", submenu: "scoreboard" });
         options.push({ name: "Aim Assist", submenu: "aim" });
+        options.push({ name: "HUD", submenu: "hud" });
         options.push({ name: "Help", submenu: "help" });
         return options;
     };
@@ -677,6 +680,14 @@ async function placeScene(floorY) {
         title: "Main Menu",
         getOptions: getMainMenuOptions, // Use a function to generate options
         submenus: {
+            hud: {
+                title: "HUD",
+                parent: "root",
+                options: [
+                    { name: "On", action: () => { isHudVisible = true; } },
+                    { name: "Off", action: () => { isHudVisible = false; } }
+                ]
+            },
             scoreboard: {
                 title: "Scoreboard",
                 parent: "root",
@@ -1323,30 +1334,39 @@ function animate(timestamp, frame) {
 
         if (bowHUD) {
             const hudMesh = bowHUD.getMesh();
-            hudMesh.visible = true;
+            hudMesh.visible = isHudVisible; // Toggle visibility based on the flag
 
-            // Position the HUD to the right of the bow
-            const rightDirection = new THREE.Vector3(-offsetDirection, 0, 0).applyQuaternion(controller.quaternion);
-            hudMesh.position.copy(controller.position).add(rightDirection.multiplyScalar(0.3)); // 30cm to the right
+            if (isHudVisible) {
+                // Position the HUD to the right of the bow
+                const rightDirection = new THREE.Vector3(-offsetDirection, 0, 0).applyQuaternion(controller.quaternion);
+                hudMesh.position.copy(controller.position).add(rightDirection.multiplyScalar(0.3)); // 30cm to the right
 
-            // Make the HUD face the camera/user
-            hudMesh.quaternion.copy(camera.quaternion);
+                // Make the HUD face the camera/user
+                hudMesh.quaternion.copy(camera.quaternion);
+            }
         }
     } else {
         if (bowHUD) bowHUD.getMesh().visible = false;
     }
 
-    if (bowHUD && bowHUD.getMesh().visible) {
-        // Determine which arrows' scores to show (the current round's)
-        const roundSize = 3;
-        const currentRoundIndex = Math.floor(currentGame.scores.length / roundSize);
-        const startIndex = currentRoundIndex * roundSize;
-        const relevantArrows = firedArrows.slice(startIndex, startIndex + roundSize);
-        const scores = relevantArrows.map(a => a.score);
+    if (bowHUD && isHudVisible && bowHUD.getMesh().visible) {
+        let scoresToShow = hudScores;
+        // If the hudScores array is empty (i.e., we are in a new round),
+        // show the scores for the arrows shot so far in the current round.
+        if (scoresToShow.length === 0) {
+            const roundSize = 3;
+            const currentRoundIndex = Math.floor(currentGame.scores.length / roundSize);
+            const startIndex = currentRoundIndex * roundSize;
+            const relevantArrows = firedArrows.slice(startIndex, startIndex + roundSize);
+            scoresToShow = relevantArrows.map(a => a.score);
+        }
+
+        // Prioritize showing stats for the currently held arrow, otherwise show the last fired one.
+        const arrowForHUD = arrowObject || lastFiredArrow;
 
         bowHUD.update({
-            scores: scores,
-            lastArrow: lastFiredArrow
+            scores: scoresToShow,
+            lastArrow: arrowForHUD
         });
     }
 
@@ -1514,6 +1534,9 @@ function processScores() {
     const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
     scores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
 
+    // Update the persistent HUD scores
+    hudScores = scores;
+
     // Add new scores to the current game object
     currentGame.scores.push(...scores);
 
@@ -1534,6 +1557,9 @@ function cleanupRound() {
         }
     });
     currentRoundArrows = []; // Clear the temporary array
+
+    // Clear the HUD scores for the next round
+    hudScores = [];
 
     // Reset target position
     if (target) {
