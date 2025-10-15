@@ -142,6 +142,88 @@ class Scoreboard {
 /**
  * A class for creating and managing a visual in-VR menu.
  */
+class BowHUD {
+    constructor() {
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = 512; // A good resolution for clarity
+        this.canvas.height = 300; // Increased height for the new field
+        this.context = this.canvas.getContext('2d');
+
+        this.texture = new THREE.CanvasTexture(this.canvas);
+        this.texture.encoding = THREE.sRGBEncoding;
+        this.texture.anisotropy = 16;
+
+        const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true });
+        // Aspect ratio is 512:300, so the plane should be e.g., 0.4 x 0.234
+        const geometry = new THREE.PlaneGeometry(0.4, 0.234);
+        this.mesh = new THREE.Mesh(geometry, material);
+        this.mesh.visible = false; // Initially hidden
+
+        this.clear(); // Draw the initial empty HUD
+    }
+
+    clear() {
+        const ctx = this.context;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = 'rgba(0, 20, 40, 0.7)'; // Semi-transparent dark blue
+        ctx.fillRect(0, 0, w, h);
+
+        this.texture.needsUpdate = true;
+    }
+
+    update(data) {
+        this.clear();
+        const ctx = this.context;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 32px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        // --- Scores ---
+        const scoresText = data.scores.join(' | ');
+        ctx.fillText(`Scores: ${scoresText}`, 15, 15);
+
+
+        if (data.lastArrow) {
+            const arrowData = data.lastArrow;
+            ctx.font = '28px sans-serif';
+
+            // --- Speed ---
+            const speed = arrowData.speed.toFixed(2);
+            const topSpeed = arrowData.topSpeed.toFixed(2);
+            ctx.fillText(`Speed: ${speed} m/s (Top: ${topSpeed})`, 15, 65);
+
+            // --- Distance ---
+            ctx.fillStyle = arrowData.isMoving ? 'lime' : 'red';
+            const distance = arrowData.distance.toFixed(2);
+            ctx.fillText(`Distance: ${distance} m`, 15, 110);
+
+            // --- Altitude ---
+            ctx.fillStyle = 'white';
+            const altitude = arrowData.altitude.toFixed(2);
+            const maxAltitude = arrowData.maxAltitude.toFixed(2);
+            ctx.fillText(`Altitude: ${altitude} m (Max: ${maxAltitude})`, 15, 155);
+
+            // --- Angle ---
+            const angle = arrowData.angle.toFixed(1);
+            ctx.fillText(`Angle: ${angle}°`, 15, 200);
+        }
+
+
+        this.texture.needsUpdate = true;
+    }
+
+    getMesh() {
+        return this.mesh;
+    }
+}
+
 class Menu {
     constructor() {
         this.canvas = document.createElement('canvas');
@@ -301,6 +383,7 @@ let bow, target, bowstring;
 let arrowTemplate;
 let arrowObject = null;
 let firedArrows = []; // Master list of all arrows shot in the current 12-shot game
+let lastFiredArrow = null;
 let currentRoundArrows = []; // The 3 arrows being processed after a round
 
 // --- Game Data and State ---
@@ -308,6 +391,18 @@ let gameHistory = [];
 let currentGame = null;
 let runningTotal = 0;
 let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for history.
+
+// --- HUD ---
+let bowHUD;
+let hudScores = [];
+let isHudVisible = true;
+
+/*
+let isArrowCamVisible = false;
+let arrowCamera;
+let arrowCamViewer;
+let arrowCamRenderTarget;
+*/
 
 // --- Menu ---
 let menu;
@@ -401,7 +496,29 @@ async function init() {
     menu = new Menu();
     scene.add(menu.getMesh());
 
+    // Create the Bow HUD
+    bowHUD = new BowHUD();
+    scene.add(bowHUD.getMesh());
+/*
+    // --- Arrow Camera Setup ---
+    // The size of the render target determines the resolution of the arrow cam view.
+    arrowCamRenderTarget = new THREE.WebGLRenderTarget(512, 512, {
+        encoding: THREE.sRGBEncoding
+    });
 
+    // Create the second camera for the arrow.
+    arrowCamera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+    scene.add(arrowCamera);
+
+    // Create the viewer plane.
+    const viewerGeometry = new THREE.PlaneGeometry(0.3, 0.3);
+    const viewerMaterial = new THREE.MeshBasicMaterial({ map: arrowCamRenderTarget.texture });
+    arrowCamViewer = new THREE.Mesh(viewerGeometry, viewerMaterial);
+    arrowCamViewer.visible = false;
+    scene.add(arrowCamViewer);
+*/
+
+    loadSettings();
     startNewGame();
 
 
@@ -471,6 +588,13 @@ function onSelectStart(event) {
         return; // Prevent other actions
     }
 
+/*
+    // --- Arrow Cam Deactivation ---
+    if (arrowCamViewer) {
+        arrowCamViewer.visible = false;
+    }
+*/
+
     // --- Arrow Spawning ---
     // Conditions: No arrow currently held, not holding the bow with this hand.
     if (!arrowObject && controller !== bowController) {
@@ -506,7 +630,15 @@ function onSelectStart(event) {
                     body: body,
                     isNocked: false, // New state for nocking
                     hasScored: false,
-                    score: 'M'
+                    score: 'M',
+                    // HUD-specific data
+                    speed: 0,
+                    topSpeed: 0,
+                    distance: 0,
+                    altitude: 0,
+                    maxAltitude: 0,
+                    isMoving: false,
+                    angle: 0
                 };
                 collider.userData = { type: 'arrow', arrow: arrowObject };
 
@@ -566,33 +698,54 @@ async function placeScene(floorY) {
             { name: "Range", submenu: "range" },
             { name: "Motion", submenu: "motion" }
         ];
-        if (targetMotionState !== 'Still') {
+        //if (targetMotionState !== 'Still') {
             options.push({ name: "Speed", submenu: "speed" });
-        }
+        //}
         options.push({ name: "Scoreboard", submenu: "scoreboard" });
-        options.push({ name: "Aim Assist", submenu: "aim" });
+        options.push({ name: "Aim Line", submenu: "aim" });
+        options.push({ name: "HUD", submenu: "hud" });
+        //options.push({ name: "Arrow Cam", submenu: "arrowCam" });
         options.push({ name: "Help", submenu: "help" });
         return options;
     };
+
+/*
+            arrowCam: {
+                title: "Arrow Cam",
+                parent: "root",
+                options: [
+                    { name: "On", action: () => { isArrowCamVisible = true; saveSettings(); } },
+                    { name: "Off", action: () => { isArrowCamVisible = false; saveSettings(); } }
+                ]
+            },
+*/
 
     menuTree = {
         title: "Main Menu",
         getOptions: getMainMenuOptions, // Use a function to generate options
         submenus: {
+            hud: {
+                title: "HUD",
+                parent: "root",
+                options: [
+                    { name: "On", action: () => { isHudVisible = true; saveSettings(); } },
+                    { name: "Off", action: () => { isHudVisible = false; saveSettings(); } }
+                ]
+            },
             scoreboard: {
                 title: "Scoreboard",
                 parent: "root",
                 options: [
-                    { name: "Show", action: () => { isScoreboardVisible = true; } },
-                    { name: "Hide", action: () => { isScoreboardVisible = false; } }
+                    { name: "Show", action: () => { isScoreboardVisible = true; saveSettings(); } },
+                    { name: "Hide", action: () => { isScoreboardVisible = false; saveSettings(); } }
                 ]
             },
             aim: {
                 title: "Aim Assist",
                 parent: "root",
                 options: [
-                    { name: "On", action: () => { isAimAssistVisible = true; } },
-                    { name: "Off", action: () => { isAimAssistVisible = false; } }
+                    { name: "On", action: () => { isAimAssistVisible = true; saveSettings(); } },
+                    { name: "Off", action: () => { isAimAssistVisible = false; saveSettings(); } }
                 ]
             },
             help: {
@@ -758,19 +911,24 @@ console.log(target);
         const center = arrowBox.getCenter(new THREE.Vector3());
 
         // Determine the longest axis and assume the tip is at the negative end and nock at the positive end.
+        const localTip = new THREE.Vector3();
         if (arrowSize.x === maxDim) {
             localForward.set(-1, 0, 0);
             localNock.set(arrowBox.max.x, center.y, center.z);
+            localTip.set(arrowBox.min.x, center.y, center.z);
         } else if (arrowSize.y === maxDim) {
             localForward.set(0, -1, 0);
             localNock.set(center.x, arrowBox.max.y, center.z);
+            localTip.set(center.x, arrowBox.min.y, center.z);
         } else {
             localForward.set(0, 0, -1);
             localNock.set(center.x, center.y, arrowBox.max.z);
+            localTip.set(center.x, center.y, arrowBox.min.z);
         }
 
         arrowTemplate.userData.forward = localForward;
         arrowTemplate.userData.nock = localNock;
+        arrowTemplate.userData.tip = localTip;
 
         arrowTemplate.visible = false;
     }
@@ -814,7 +972,9 @@ function shootArrow() {
 
     body.setLinvel(worldDirection.multiplyScalar(speed), true);
 
+    arrowObject.isMoving = true;
     firedArrows.push(arrowObject);
+    lastFiredArrow = arrowObject;
 
     // State transition is now handled in the animate loop once all arrows have landed.
 
@@ -917,6 +1077,7 @@ function animate(timestamp, frame) {
 
             console.log(`Arrow hit target for score: ${arrow.score}`);
 
+            arrow.isMoving = false;
             if (arrow.score === 'M') {
                 if (arrow.body) {
                     arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
@@ -1219,6 +1380,53 @@ function animate(timestamp, frame) {
         const finalRotation = controller.quaternion.clone().multiply(offsetRotation);
         bow.position.copy(controller.position);
         bow.quaternion.copy(finalRotation);
+
+        if (bowHUD) {
+            const hudMesh = bowHUD.getMesh();
+            hudMesh.visible = isHudVisible; // Toggle visibility based on the flag
+
+            if (isHudVisible) {
+                // Position the HUD to the right of the bow
+                const offsetDirection = (bowController.userData.id === 0) ? 1 : -1;
+                const rightDirection = new THREE.Vector3(-offsetDirection, 0, 0).applyQuaternion(controller.quaternion);
+                hudMesh.position.copy(controller.position).add(rightDirection.multiplyScalar(0.3)); // 30cm to the right
+
+                // Make the HUD face the camera/user
+                hudMesh.quaternion.copy(camera.quaternion);
+            }
+        }
+        /*
+        if (arrowCamViewer) {
+            // Position the Arrow Cam viewer above the HUD
+            const rightDirection = new THREE.Vector3(-offsetDirection, 0, 0).applyQuaternion(controller.quaternion);
+            arrowCamViewer.position.copy(controller.position).add(rightDirection.multiplyScalar(0.3)).add(new THREE.Vector3(0, 0.25, 0).applyQuaternion(controller.quaternion));
+            arrowCamViewer.quaternion.copy(camera.quaternion);
+        }
+*/
+    } else {
+        if (bowHUD) bowHUD.getMesh().visible = false;
+        //if (arrowCamViewer) arrowCamViewer.visible = false;
+    }
+
+    if (bowHUD && isHudVisible && bowHUD.getMesh().visible) {
+        let scoresToShow = hudScores;
+        // If the hudScores array is empty (i.e., we are in a new round),
+        // show the scores for the arrows shot so far in the current round.
+        if (scoresToShow.length === 0) {
+            const roundSize = 3;
+            const currentRoundIndex = Math.floor(currentGame.scores.length / roundSize);
+            const startIndex = currentRoundIndex * roundSize;
+            const relevantArrows = firedArrows.slice(startIndex, startIndex + roundSize);
+            scoresToShow = relevantArrows.map(a => a.score);
+        }
+
+        // Prioritize showing stats for the currently held arrow, otherwise show the last fired one.
+        const arrowForHUD = arrowObject || lastFiredArrow;
+
+        bowHUD.update({
+            scores: scoresToShow,
+            lastArrow: arrowForHUD
+        });
     }
 
 
@@ -1261,7 +1469,7 @@ if (bowController) {
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const distance = bowHand.position.distanceTo(arrowHand.position);
-        if (distance < 0.1 && gameState === GameState.SHOOTING) { // 10cm threshold
+        if (distance < 0.15 && gameState === GameState.SHOOTING) { // 10cm threshold
             console.log("Nocking arrow by proximity.");
             arrowObject.isNocked = true;
             // Detach arrow from controller and add to scene to allow independent drawing motion.
@@ -1300,6 +1508,12 @@ if (bowController) {
         arrowBody.setNextKinematicTranslation(mesh.position);
         arrowBody.setNextKinematicRotation(mesh.quaternion);
 
+        // Also update the angle for the HUD while nocked
+        const worldTip = arrowTemplate.userData.tip.clone().applyMatrix4(mesh.matrixWorld);
+        const worldNock = localNock.clone().applyMatrix4(mesh.matrixWorld);
+        const arrowVector = new THREE.Vector3().subVectors(worldTip, worldNock);
+        arrowObject.angle = Math.atan2(arrowVector.y, Math.sqrt(arrowVector.x * arrowVector.x + arrowVector.z * arrowVector.z)) * (180 / Math.PI);
+
         arrowObject.nockPosition = clampedNockPosition;
     } else if (arrowObject) {
         arrowObject.nockPosition = null;
@@ -1312,10 +1526,18 @@ if (bowController) {
             obj.mesh.position.copy(obj.body.translation());
 
             const velocity = obj.body.linvel();
-            const speedSq = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
+            const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
+
+            // Update HUD data
+            obj.speed = speed;
+            obj.topSpeed = Math.max(obj.topSpeed, speed);
+            obj.distance = obj.mesh.position.distanceTo(camera.position);
+            obj.altitude = obj.mesh.position.y - (floorBody ? floorBody.translation().y : 0);
+            obj.maxAltitude = Math.max(obj.maxAltitude, obj.altitude);
+
 
             // For arrows in flight with significant velocity, align their visual mesh with the velocity vector
-            if (obj.body.isDynamic() && speedSq > 0.01 && arrowTemplate) {
+            if (obj.body.isDynamic() && speed > 0.1 && arrowTemplate) {
                 const worldVelocity = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
                 const localForward = arrowTemplate.userData.forward;
 
@@ -1323,6 +1545,12 @@ if (bowController) {
                 const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldVelocity);
                 obj.body.setRotation(rotation, true);
             }
+
+            // Calculate angle based on geometry
+            const worldTip = arrowTemplate.userData.tip.clone().applyMatrix4(obj.mesh.matrixWorld);
+            const worldNock = arrowTemplate.userData.nock.clone().applyMatrix4(obj.mesh.matrixWorld);
+            const arrowVector = new THREE.Vector3().subVectors(worldTip, worldNock);
+            obj.angle = Math.atan2(arrowVector.y, Math.sqrt(arrowVector.x * arrowVector.x + arrowVector.z * arrowVector.z)) * (180 / Math.PI);
             // Always update the mesh quaternion from the physics body
             obj.mesh.quaternion.copy(obj.body.rotation());
         }
@@ -1348,7 +1576,24 @@ if (bowController) {
         bowstring.geometry.attributes.position.needsUpdate = true;
         bowstring.geometry.computeBoundingSphere();
     }
+/*
+    // --- Arrow Cam Rendering ---
+    if (isArrowCamVisible && lastFiredArrow && lastFiredArrow.isMoving && lastFiredArrow.distance > 9) {
+        arrowCamViewer.visible = true;
 
+        // Position the arrow camera behind and slightly above the arrow
+        const arrowMesh = lastFiredArrow.mesh;
+        const offset = new THREE.Vector3(0, 0.1, 0.5).applyQuaternion(arrowMesh.quaternion);
+        arrowCamera.position.copy(arrowMesh.position).add(offset);
+        arrowCamera.lookAt(arrowMesh.position);
+
+        // Render the arrow camera's view to the render target
+        renderer.setRenderTarget(arrowCamRenderTarget);
+        renderer.render(scene, arrowCamera);
+        renderer.setRenderTarget(null); // Reset render target
+    }
+
+*/
     rapierDebugRenderer.update();
     renderer.render(scene, camera);
 }
@@ -1368,6 +1613,9 @@ function processScores() {
     // Sort scores for display (X is highest)
     const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
     scores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
+
+    // Update the persistent HUD scores
+    hudScores = scores;
 
     // Add new scores to the current game object
     currentGame.scores.push(...scores);
@@ -1389,6 +1637,9 @@ function cleanupRound() {
         }
     });
     currentRoundArrows = []; // Clear the temporary array
+
+    // Clear the HUD scores for the next round
+    hudScores = [];
 
     // Reset target position
     if (target) {
@@ -1444,6 +1695,27 @@ function calculateGameTotals(game) {
     game.runningTotal = runningTotal + game.dozenTotal;
 
     return game;
+}
+
+function saveSettings() {
+    const settings = {
+        isScoreboardVisible,
+        isAimAssistVisible,
+        isHudVisible
+    };
+        //isArrowCamVisible
+    localStorage.setItem('archerySettings', JSON.stringify(settings));
+}
+
+function loadSettings() {
+    const savedSettings = localStorage.getItem('archerySettings');
+    if (savedSettings) {
+        const settings = JSON.parse(savedSettings);
+        isScoreboardVisible = settings.isScoreboardVisible ?? true;
+        isAimAssistVisible = settings.isAimAssistVisible ?? true;
+        isHudVisible = settings.isHudVisible ?? true;
+    }
+        //isArrowCamVisible = settings.isArrowCamVisible ?? true;
 }
 
 
