@@ -9,6 +9,7 @@ var myLine;
 
 const OFFSET_DISTANCE = 0.015;
 let offsetDirection,LOCAL_LEFT;
+let sty=0; //start and scoring height
 
 /**
  * A class for creating and managing a visual scoreboard in a Three.js scene.
@@ -153,45 +154,71 @@ class Menu {
         this.texture.anisotropy = 16;
 
         const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, side: THREE.DoubleSide });
-        const geometry = new THREE.PlaneGeometry(0.5, 1); // Aspect ratio 1:2
+        const geometry = new THREE.PlaneGeometry(0.5, 1);
         this.mesh = new THREE.Mesh(geometry, material);
-        this.mesh.visible = false; // Initially hidden
+        this.mesh.visible = false;
     }
 
-    /**
-     * Draws the menu options on the canvas.
-     * @param {string[]} options - The array of text strings to display.
-     * @param {number} highlightedIndex - The index of the option to highlight.
-     */
-    draw(options, highlightedIndex) {
+    draw(menuNode, highlightedIndex) {
         const ctx = this.context;
         const w = this.canvas.width;
         const h = this.canvas.height;
+        const options = (typeof menuNode.getOptions === 'function' ? menuNode.getOptions() : menuNode.options).map(opt => opt.name);
 
-        // Background
-        ctx.fillStyle = 'rgba(0, 51, 102, 0.8)'; // Semi-transparent blue
+        // Clear and draw background
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = 'rgba(0, 51, 102, 0.8)';
         ctx.fillRect(0, 0, w, h);
         ctx.strokeStyle = 'white';
         ctx.lineWidth = 5;
         ctx.strokeRect(0, 0, w, h);
 
-
-        // Text properties
-        ctx.font = 'bold 60px sans-serif';
+        // Title
+        ctx.font = 'bold 50px sans-serif';
+        ctx.fillStyle = 'white';
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.fillText(menuNode.title, w / 2, 70);
 
-        const lineHeight = h / (options.length + 1); // Add padding
+        // Options
+        ctx.font = 'bold 60px sans-serif';
+        ctx.textBaseline = 'middle';
+        const lineHeight = (h - 150) / (options.length);
 
         options.forEach((option, i) => {
-            const y = lineHeight * (i + 1);
-
-            if (i === highlightedIndex) {
-                ctx.fillStyle = '#FFD700'; // Gold for highlighted
-            } else {
-                ctx.fillStyle = 'white'; // White for others
-            }
+            const y = 150 + (lineHeight * i) + (lineHeight / 2);
+            ctx.fillStyle = (i === highlightedIndex) ? '#FFD700' : 'white';
             ctx.fillText(option, w / 2, y);
+        });
+
+        this.texture.needsUpdate = true;
+    }
+
+    drawHelp(helpNode) {
+        const ctx = this.context;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        // Clear and draw background
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = 'rgba(0, 51, 102, 0.8)';
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 5;
+        ctx.strokeRect(0, 0, w, h);
+
+        // Title
+        ctx.font = 'bold 50px sans-serif';
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'center';
+        ctx.fillText(helpNode.title, w / 2, 60);
+
+        // Help Text
+        ctx.font = '36px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        const lineHeight = 45;
+        helpNode.lines.forEach((line, i) => {
+            ctx.fillText(line, 40, 120 + i * lineHeight);
         });
 
         this.texture.needsUpdate = true;
@@ -237,14 +264,15 @@ class RapierDebugRenderer {
 function moveTargetToDistance(distance) {
     if (!target || !target.userData.body) return;
 
-    // Update the stored shooting position
-    target.userData.shootingPosition.z = -distance;
+    const newPosition = new THREE.Vector3(0, initialTargetPosition ? initialTargetPosition.y : sty, -distance);
 
-    // Immediately move the visual group to the new position
-    target.position.copy(target.userData.shootingPosition);
+    // Update the stored shooting position and the global initial position
+    target.userData.shootingPosition.copy(newPosition);
+    if(initialTargetPosition) initialTargetPosition.copy(newPosition);
 
-    // Sync the single physics body to the new position
-    target.userData.body.setNextKinematicTranslation(target.position, true);
+    // Immediately move the visual group and sync the physics body
+    target.position.copy(newPosition);
+    target.userData.body.setNextKinematicTranslation(newPosition, true);
     target.userData.body.setNextKinematicRotation(target.quaternion, true);
 }
 
@@ -285,7 +313,25 @@ let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for hist
 let menu;
 let isMenuOpen = false;
 const targetDistances = [3, 6, 9, 15, 20, 25, 30, 40, 50];
-let selectedDistanceIndex = 0;
+let selectedMenuIndex = 0;
+
+let menuTree; // Will be defined in placeScene
+let currentMenuNode = null;
+
+// --- Target Motion State ---
+let targetMotionState = 'Still'; // Still, Left & Right, Up & Down, Random
+let targetMotionSpeed = 'Medium'; // Slow, Medium, Fast, Random
+let initialTargetPosition = null;
+let motionTheta = 0;
+let motionPhi = Math.PI / 2;
+let isScoreboardVisible = true;
+let isAimAssistVisible = true;
+let scoreboardStateBeforeInspection = true;
+let qixMotionDirection = new THREE.Vector3();
+let qixMotionDuration = 0;
+let qixMotionStartTime = 0;
+let lastTimestamp = 0;
+let randomMotionStartPosition = new THREE.Vector3();
 
 // --- Game State Machine ---
 const GameState = {
@@ -307,6 +353,8 @@ let bowController = null;
 let arrowController = null;
 let sceneSetupInitiated = false;
 let aButtonPressed = [false, false]; // To track 'A' button state for each controller
+let bButtonPressed = [false, false]; // To track 'B' button state for each controller
+let thumbstickPressed = [false, false]; // To track thumbstick button state
 let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
 let button12Pressed = [false, false]; // To track button 12 state for each controller
 
@@ -393,15 +441,81 @@ function onSelectStart(event) {
 
     // --- Menu Selection ---
     if (isMenuOpen) {
-        const newDistance = targetDistances[selectedDistanceIndex];
-        moveTargetToDistance(newDistance);
-        console.log(`Target distance set to: ${newDistance}m`);
+        if (!currentMenuNode) return;
 
-        isMenuOpen = false;
-        menu.hide();
-        return; // Prevent drawing an arrow
+        // If on an info screen like Help, any button press closes it.
+        if (currentMenuNode.type === 'info') {
+            currentMenuNode = menuTree.submenus[currentMenuNode.parent];
+            selectedMenuIndex = 0;
+            menu.draw(currentMenuNode, selectedMenuIndex);
+            return;
+        }
+
+        const options = typeof currentMenuNode.getOptions === 'function' ? currentMenuNode.getOptions() : currentMenuNode.options;
+        const selectedOption = options[selectedMenuIndex];
+        if (selectedOption) {
+            if (selectedOption.submenu) {
+                currentMenuNode = menuTree.submenus[selectedOption.submenu];
+                selectedMenuIndex = 0;
+                if (currentMenuNode.type === 'info') {
+                    menu.drawHelp(currentMenuNode);
+                } else {
+                    menu.draw(currentMenuNode, selectedMenuIndex);
+                }
+            } else if (selectedOption.action) {
+                selectedOption.action();
+                isMenuOpen = false;
+                menu.hide();
+            }
+        }
+        return; // Prevent other actions
     }
 
+    // --- Arrow Spawning ---
+    // Conditions: No arrow currently held, not holding the bow with this hand.
+    if (!arrowObject && controller !== bowController) {
+        // Explicitly check if the controller is the bow controller
+        if (bowController && controller.userData.id === bowController.userData.id) {
+            return;
+        }
+        const otherController = renderer.xr.getController(1 - controller.userData.id);
+        if (otherController) {
+            const distance = controller.position.distanceTo(otherController.position);
+
+            // Spawn only if hands are far enough apart
+            if (distance > 0.5) {
+                if (!arrowTemplate) return;
+
+                const newArrowMesh = arrowTemplate.clone();
+                newArrowMesh.visible = true;
+
+                // Create physics body
+                const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
+                const body = world.createRigidBody(arrowBodyDesc);
+                const vertices = arrowTemplate.geometry.attributes.position.array;
+                const indices = arrowTemplate.geometry.index.array;
+                const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices)
+                    .setMass(0.1)
+                    .setCollisionGroups(ARROW_GROUP_FILTER)
+                    .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+                const collider = world.createCollider(colliderDesc, body);
+
+                // Create the arrow object with new state
+                arrowObject = {
+                    mesh: newArrowMesh,
+                    body: body,
+                    isNocked: false, // New state for nocking
+                    hasScored: false,
+                    score: 'M'
+                };
+                collider.userData = { type: 'arrow', arrow: arrowObject };
+
+                // Parent the arrow to the controller that spawned it
+                controller.add(newArrowMesh);
+                arrowController = controller;
+            }
+        }
+    }
 
     // If viewing history, snap back to the current game upon drawing an arrow
     if (viewingGameIndex !== -1) {
@@ -409,46 +523,33 @@ function onSelectStart(event) {
         scoreboard.displayGame(currentGame);
         console.log("Switched back to current game due to drawing arrow.");
     }
-
-    if (bowController && controller !== bowController) {
-        // Only allow drawing a new arrow if in SHOOTING state and menu is closed
-        if (gameState === GameState.SHOOTING && !arrowObject && !isMenuOpen) {
-            if (!arrowTemplate) return;
-
-            const newArrowMesh = arrowTemplate.clone();
-            newArrowMesh.visible = true;
-            scene.add(newArrowMesh);
-
-            const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased().setCcdEnabled(false);
-            const body = world.createRigidBody(arrowBodyDesc);
-            const vertices = arrowTemplate.geometry.attributes.position.array;
-            const indices = arrowTemplate.geometry.index.array;
-            const colliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices)
-                .setMass(0.1)
-                .setCollisionGroups(ARROW_GROUP_FILTER)
-                .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-            const collider = world.createCollider(colliderDesc, body);
-
-            arrowObject = { mesh: newArrowMesh, body: body, hasScored: false, score: 'M' }; // Default score is Miss
-            collider.userData = { type: 'arrow', arrow: arrowObject };
-        }
-        arrowController = controller;
-    }
 }
 
 function onSelectEnd(event) {
-    if (arrowController === event.target) {
-        shootArrow();
+    const controller = event.target;
+    if (controller === arrowController && arrowObject) {
+        if (arrowObject.isNocked) {
+            // If arrow is nocked, fire it
+            shootArrow();
+        } else {
+            // If not nocked, cancel the arrow
+            console.log("Arrow grab released without nocking. Cancelling arrow.");
+            if (arrowObject.mesh) arrowObject.mesh.removeFromParent(); // Remove from controller
+            if (arrowObject.body) world.removeRigidBody(arrowObject.body);
+            arrowObject = null;
+            arrowController = null;
+        }
     }
 }
 
 async function placeScene(floorY) {
 
- const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
- const points = [new THREE.Vector3(), new THREE.Vector3()];
- const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
- myLine = new THREE.Line(lineGeometry, lineMaterial);
- scene.add(myLine);
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
+    const points = [new THREE.Vector3(), new THREE.Vector3()];
+    const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+    myLine = new THREE.Line(lineGeometry, lineMaterial);
+    myLine.visible = false;
+    scene.add(myLine);
 
     const gltf = await loader.loadAsync('3d/archery.glb');
 
@@ -459,11 +560,106 @@ async function placeScene(floorY) {
     const floorCollider = world.createCollider(floorColliderDesc, floorBody);
     floorCollider.userData = { type: 'floor' };
 
-    const initialDistance = targetDistances[selectedDistanceIndex];
+    // --- Menu Tree Definition ---
+    const getMainMenuOptions = () => {
+        const options = [
+            { name: "Range", submenu: "range" },
+            { name: "Motion", submenu: "motion" }
+        ];
+        if (targetMotionState !== 'Still') {
+            options.push({ name: "Speed", submenu: "speed" });
+        }
+        options.push({ name: "Scoreboard", submenu: "scoreboard" });
+        options.push({ name: "Aim Assist", submenu: "aim" });
+        options.push({ name: "Help", submenu: "help" });
+        return options;
+    };
+
+    menuTree = {
+        title: "Main Menu",
+        getOptions: getMainMenuOptions, // Use a function to generate options
+        submenus: {
+            scoreboard: {
+                title: "Scoreboard",
+                parent: "root",
+                options: [
+                    { name: "Show", action: () => { isScoreboardVisible = true; } },
+                    { name: "Hide", action: () => { isScoreboardVisible = false; } }
+                ]
+            },
+            aim: {
+                title: "Aim Assist",
+                parent: "root",
+                options: [
+                    { name: "On", action: () => { isAimAssistVisible = true; } },
+                    { name: "Off", action: () => { isAimAssistVisible = false; } }
+                ]
+            },
+            help: {
+                title: "Help",
+                parent: "root",
+                type: "info", // Special type for the drawHelp method
+                lines: [
+                    "CONTROLS:",
+                    "Grip: Hold Bow",
+                    "Trigger: Spawn/Shoot Arrow",
+                    "A Button: Confirm Menu",
+                    "B Button: Cancel/Back Menu",
+                    "Joystick: Navigate Menu",
+                    "Thumbstick: Toggle Scoreboard",
+                    "",
+                    "PROCEDURE:",
+                    "1. Hold Grip for Bow.",
+                    "2. Press Trigger for Arrow.",
+                    "3. Bring hands together to nock.",
+                    "4. Release Trigger to fire."
+                ]
+            },
+            range: {
+                title: "Set Range",
+                parent: "root",
+                options: targetDistances.map(d => ({
+                    name: `${d} meters`,
+                    action: () => moveTargetToDistance(d)
+                }))
+            },
+            motion: {
+                title: "Set Motion",
+                parent: "root",
+                options: [
+                    { name: "Still", action: () => { targetMotionState = 'Still'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
+                    { name: "Left & Right", action: () => { targetMotionState = 'Left & Right'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
+                    { name: "Up & Down", action: () => { targetMotionState = 'Up & Down'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
+                    { name: "Random", action: () => {
+                        targetMotionState = 'Random';
+                        if(target && initialTargetPosition) {
+                            target.position.copy(initialTargetPosition);
+                            qixMotionStartTime = 0;
+                            lastTimestamp = 0;
+                        }
+                    } }
+                ]
+            },
+            speed: {
+                title: "Set Speed",
+                parent: "root",
+                options: [
+                    { name: "Slow", action: () => { targetMotionSpeed = 'Slow'; } },
+                    { name: "Medium", action: () => { targetMotionSpeed = 'Medium'; } },
+                    { name: "Fast", action: () => { targetMotionSpeed = 'Fast'; } },
+                    { name: "Random", action: () => { targetMotionSpeed = 'Random'; } }
+                ]
+            }
+        }
+    };
+    // Add a 'root' reference for easier navigation
+    menuTree.submenus.root = menuTree;
+
+
+    const initialDistance = targetDistances[0]; // Default to the first distance
     target = new THREE.Group();
-    target.userData.shootingPosition = target.position.clone();
-    target.userData.shootingPosition = target.position.clone();
-    target.userData.scoringPosition = new THREE.Vector3(0, target.position.y, -1.2);
+    target.userData.shootingPosition = new THREE.Vector3(0, sty, -initialDistance);
+    target.userData.scoringPosition = new THREE.Vector3(0, sty, -1.2);
     target.userData.inScoringPosition = false;
 
     // Create a single, kinematic rigid body for the entire target.
@@ -516,7 +712,10 @@ async function placeScene(floorY) {
 console.log(target);
 
     scene.add(target);
-    moveTargetToDistance(targetDistances[selectedDistanceIndex]);
+    moveTargetToDistance(initialDistance);
+
+    // Store the initial position after it's set
+    initialTargetPosition = target.position.clone();
 
 
     bow = gltf.scene.getObjectByName('bow');
@@ -579,12 +778,16 @@ console.log(target);
 
 function shootArrow() {
     if (!bowController || !arrowController || !arrowObject || !arrowObject.body) return;
+    if (gameState === GameState.PROCESSING_SCORE) { return; }
+    if (gameState === GameState.INSPECTING) { return; }
 
     const { mesh, body } = arrowObject;
 
+    // Ensure the body is dynamic and awake before applying forces.
+    body.setBodyType(RAPIER.RigidBodyType.Dynamic);
     body.setTranslation(mesh.position, true);
     body.setRotation(mesh.quaternion, true);
-    body.setBodyType(RAPIER.RigidBodyType.Dynamic);
+    body.wakeUp(); // Ensure the body is active in the simulation
 
     const arrowHand = renderer.xr.getController(arrowController.userData.id);
     const bowHand = renderer.xr.getController(bowController.userData.id);
@@ -666,18 +869,22 @@ function animate(timestamp, frame) {
 
     if (world) world.step(eventQueue);
 
+    const collisions = new Map();
+
     eventQueue.drainCollisionEvents((handle1, handle2, started) => {
         if (!started) return;
 
         const collider1 = world.getCollider(handle1);
         const collider2 = world.getCollider(handle2);
 
-        let arrow, otherCollider;
+        let arrow, otherCollider, arrowHandle;
         if (collider1?.userData?.type === 'arrow') {
             arrow = collider1.userData.arrow;
+            arrowHandle = handle1;
             otherCollider = collider2;
         } else if (collider2?.userData?.type === 'arrow') {
             arrow = collider2.userData.arrow;
+            arrowHandle = handle2;
             otherCollider = collider1;
         } else {
             return;
@@ -685,33 +892,47 @@ function animate(timestamp, frame) {
 
         if (arrow.hasScored) return;
 
+        if (!collisions.has(arrowHandle)) {
+            collisions.set(arrowHandle, { arrow: arrow, scores: [] });
+        }
+
         if (otherCollider?.userData?.type === 'target') {
-            arrow.hasScored = true;
             const scoreValue = colliderToScoreMap.get(otherCollider.handle);
-            arrow.score = scoreValue;
-            console.log(`Arrow hit target for score: ${arrow.score}`);
-
-            // To make arrow "stick," remove its physics body and parent it to the target.
-            // The `attach` method correctly handles preserving the world transform.
-            if (arrow.body) {
-                target.attach(arrow.mesh);
-                world.removeRigidBody(arrow.body);
-                arrow.body = null;
-            }
-
+            collisions.get(arrowHandle).scores.push(scoreValue);
         } else if (otherCollider?.userData?.type === 'floor') {
-            arrow.hasScored = true;
-            arrow.score = 'M'; // Miss
-            console.log('Arrow hit floor. Miss.');
-             // Make arrow stick to floor
-            if (arrow.body) {
-                arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
-            }
+            collisions.get(arrowHandle).scores.push('M');
         }
     });
 
-    // --- Game State Machine ---
+    for (const [arrowHandle, collisionData] of collisions.entries()) {
+        const { arrow, scores } = collisionData;
 
+        if (scores.length > 0) {
+            arrow.hasScored = true;
+
+            // Determine the best score
+            const scoreValue = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
+            scores.sort((a, b) => scoreValue(b) - scoreValue(a));
+            arrow.score = scores[0];
+
+            console.log(`Arrow hit target for score: ${arrow.score}`);
+
+            if (arrow.score === 'M') {
+                if (arrow.body) {
+                    arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
+                }
+            } else {
+                if (arrow.body) {
+                    target.attach(arrow.mesh);
+                    world.removeRigidBody(arrow.body);
+                    arrow.body = null;
+                }
+            }
+        }
+    }
+
+    // --- Game State Machine ---
+    //console.log(gameState);
     // Check if the current round is over and ready for scoring
     if (gameState === GameState.SHOOTING) {
         const roundSize = 3;
@@ -743,9 +964,12 @@ function animate(timestamp, frame) {
 
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
+                scoreboardStateBeforeInspection = isScoreboardVisible;
+                    isScoreboardVisible = true; // Show scoreboard when inspecting
                 target.userData.inScoringPosition = true;
                 // Move the visual group first, then sync the physics body to it.
                 target.position.copy(target.userData.scoringPosition);
+                    target.rotation.set(0, 0, 0); // Reset rotation
                 if (target.userData.body) {
                     target.userData.body.setNextKinematicTranslation(target.position, true);
                     target.userData.body.setNextKinematicRotation(target.quaternion, true);
@@ -759,55 +983,107 @@ function animate(timestamp, frame) {
     }
 
 
+    if (scoreboard && scoreboard.getMesh()) {
+        scoreboard.getMesh().visible = isScoreboardVisible;
+    }
+
+    if (bowController && myLine) {
+        myLine.visible = isAimAssistVisible;
+    } else if (myLine) {
+        myLine.visible = false;
+    }
+
     if (renderer.xr.isPresenting) {
         for (let i = 0; i < 2; i++) {
             const controller = renderer.xr.getController(i);
             if (controller && controller.gamepad) {
                 // --- Grip button for holding the bow ---
                 if (controller.gamepad.buttons[1].pressed) {
-                    if (!bowController) {
-                     bowController = controller;
-                     if (bow) bow.visible = true;
-                     if (bowstring) bowstring.visible = true;
+                    // Prevent spawning bow if this hand is holding an arrow
+                    if (!bowController && controller !== arrowController) {
+                        // Check distance between hands before spawning the bow
+                        const otherController = renderer.xr.getController(1 - i); // Get the other controller
+                        if (otherController) {
+                            const distance = controller.position.distanceTo(otherController.position);
+                            if (distance > 0.5) { // 50cm threshold
+                                bowController = controller;
+                                if (bow) bow.visible = true;
+                                if (bowstring) bowstring.visible = true;
+                            }
+                        }
                     }
                 } else {
-                    if (bowController === controller) { 
-                     bowController = null;
-                     if (bow) bow.visible = false;
-                     if (bowstring) bowstring.visible = false;
+                    if (bowController === controller) {
+                        bowController = null;
+                        if (bow) bow.visible = false;
+                        if (bowstring) bowstring.visible = false;
                     }
                 }
 
-                // --- 'A' button for scoring ---
-                if (gameState === GameState.INSPECTING && controller.gamepad.buttons[4] && controller.gamepad.buttons[4].pressed) {
+                // --- 'A' button for menu confirmation or scoring ---
+                if (controller.gamepad.buttons[4] && controller.gamepad.buttons[4].pressed) {
                     if (!aButtonPressed[i]) {
                         aButtonPressed[i] = true;
-                        gameState = GameState.RESETTING;
-                        console.log("Entering RESETTING state.");
+                        if (isMenuOpen) {
+                            // Re-use the same logic as onSelectStart for menu confirmation
+                            onSelectStart({ target: controller });
+                        } else if (gameState === GameState.INSPECTING) {
+                            gameState = GameState.RESETTING;
+                            console.log("Entering RESETTING state.");
+                        }
                     }
                 } else {
                     aButtonPressed[i] = false;
                 }
 
+                // --- 'B' button for menu back/cancel ---
+                if (controller.gamepad.buttons[5] && controller.gamepad.buttons[5].pressed) {
+                    if (!bButtonPressed[i]) {
+                        bButtonPressed[i] = true;
+                        if (isMenuOpen && currentMenuNode && currentMenuNode.parent) {
+                            currentMenuNode = menuTree.submenus[currentMenuNode.parent];
+                            selectedMenuIndex = 0;
+                            menu.draw(currentMenuNode, selectedMenuIndex);
+                            console.log(`Navigated back to ${currentMenuNode.title}`);
+                        } else if (isMenuOpen) {
+                            // At root, B closes the menu
+                            isMenuOpen = false;
+                            menu.hide();
+                        }
+                    }
+                } else {
+                    bButtonPressed[i] = false;
+                }
+
+                // --- Thumbstick press to toggle scoreboard ---
+                if (controller.gamepad.buttons[3] && controller.gamepad.buttons[3].pressed) {
+                    if (!thumbstickPressed[i]) {
+                        thumbstickPressed[i] = true;
+                        isScoreboardVisible = !isScoreboardVisible;
+                    }
+                } else {
+                    thumbstickPressed[i] = false;
+                }
+
                 // --- Menu Toggle (Button 12) ---
-                // This button is often the 'home' or 'system' button on many controllers
                 if (controller.gamepad.buttons[12] && controller.gamepad.buttons[12].pressed) {
                     if (!button12Pressed[i]) {
                         button12Pressed[i] = true;
                         isMenuOpen = !isMenuOpen;
 
                         if (isMenuOpen) {
+                            // Reset to the main menu
+                            currentMenuNode = menuTree;
+                            selectedMenuIndex = 0;
+
                             const menuMesh = menu.getMesh();
-                            // Position the menu in front of the camera
                             const cameraDirection = new THREE.Vector3();
                             camera.getWorldDirection(cameraDirection);
                             const distance = 1.5;
                             menuMesh.position.copy(camera.position).add(cameraDirection.multiplyScalar(distance));
                             menuMesh.quaternion.copy(camera.quaternion);
 
-                            // Initial draw
-                            const distanceOptions = targetDistances.map(d => `${d} meters`);
-                            menu.draw(distanceOptions, selectedDistanceIndex);
+                            menu.draw(currentMenuNode, selectedMenuIndex);
                             menu.show();
                             console.log("Menu opened.");
                         } else {
@@ -822,47 +1098,35 @@ function animate(timestamp, frame) {
 
                 // --- Joystick Navigation (History and Menu) ---
                 if (controller.gamepad.axes.length > 3) {
-                    const joystickY = controller.gamepad.axes[3]; // Typically the Y-axis of the right stick
+                    const joystickY = controller.gamepad.axes[3];
 
                     if (Math.abs(joystickY) > 0.8) {
                         if (!joystickMoved[i]) {
                             joystickMoved[i] = true;
-                            const distanceOptions = targetDistances.map(d => `${d} meters`);
 
-                            if (isMenuOpen) {
-                                // --- Menu Navigation ---
+                            if (isMenuOpen && currentMenuNode && currentMenuNode.type !== 'info') {
+                                const options = typeof currentMenuNode.getOptions === 'function' ? currentMenuNode.getOptions() : currentMenuNode.options;
+                                const numOptions = options.length;
                                 if (joystickY < 0) { // Up
-                                    selectedDistanceIndex = Math.max(0, selectedDistanceIndex - 1);
+                                    selectedMenuIndex = (selectedMenuIndex - 1 + numOptions) % numOptions;
                                 } else { // Down
-                                    selectedDistanceIndex = Math.min(distanceOptions.length - 1, selectedDistanceIndex + 1);
+                                    selectedMenuIndex = (selectedMenuIndex + 1) % numOptions;
                                 }
-                                menu.draw(distanceOptions, selectedDistanceIndex);
-                                console.log(`Selected distance index: ${selectedDistanceIndex}`);
-
-                            } else {
+                                menu.draw(currentMenuNode, selectedMenuIndex);
+                                console.log(`Selected menu index: ${selectedMenuIndex}`);
+                            } else if (!isMenuOpen) {
                                 // --- History Navigation ---
-                                if (joystickY < 0) { // Stick moved up
-                                    if (viewingGameIndex > -1) {
-                                        viewingGameIndex--;
-                                    } else if (gameHistory.length > 0) { // Wrap from current to last historical
-                                        viewingGameIndex = gameHistory.length - 1;
-                                    }
-                                } else { // Stick moved down
-                                    if (viewingGameIndex < gameHistory.length - 1) {
-                                        viewingGameIndex++;
-                                    } else if (viewingGameIndex !== -1) { // Wrap from last historical to current
-                                        viewingGameIndex = -1;
-                                    }
+                                if (joystickY < 0) { // Up
+                                    if (viewingGameIndex > -1) viewingGameIndex--;
+                                    else if (gameHistory.length > 0) viewingGameIndex = gameHistory.length - 1;
+                                } else { // Down
+                                    if (viewingGameIndex < gameHistory.length - 1) viewingGameIndex++;
+                                    else if (viewingGameIndex !== -1) viewingGameIndex = -1;
                                 }
-
-                                // Update scoreboard to show the selected game
-                                if (viewingGameIndex === -1) {
-                                    scoreboard.displayGame(currentGame);
-                                    console.log("Viewing current game");
-                                } else {
-                                    scoreboard.displayGame(gameHistory[viewingGameIndex]);
-                                    console.log(`Viewing historical game #${gameHistory[viewingGameIndex].gameNumber}`);
-                                }
+                                // Update scoreboard display
+                                const gameToShow = (viewingGameIndex === -1) ? currentGame : gameHistory[viewingGameIndex];
+                                scoreboard.displayGame(gameToShow);
+                                console.log(`Viewing game #${gameToShow.gameNumber}`);
                             }
                         }
                     } else {
@@ -873,7 +1137,77 @@ function animate(timestamp, frame) {
         }
     }
 
+
+    if (scoreboard && scoreboard.getMesh()) {
+        scoreboard.getMesh().visible = isScoreboardVisible;
+    }
+
+    // --- Target Motion Logic ---
+    if (gameState === GameState.SHOOTING && targetMotionState !== 'Still' && target && initialTargetPosition && target.userData.body) {
+        const time = performance.now() / 1000; // Time in seconds
+        const speedMap = { Slow: 0.5, Medium: 1.0, Fast: 2.0 };
+        let speed;
+
+        if (targetMotionSpeed === 'Random') {
+            const slow = speedMap.Slow;
+            const fast = speedMap.Fast;
+            const speedRange = (fast - slow) / 2;
+            const midSpeed = slow + speedRange;
+            speed = midSpeed + Math.sin(time * 0.1) * speedRange;
+        } else {
+            speed = speedMap[targetMotionSpeed] || 1.0;
+        }
+
+        const newPosition = initialTargetPosition.clone();
+
+        switch (targetMotionState) {
+            case 'Left & Right':
+                newPosition.x += Math.sin(time * speed);
+                break;
+            case 'Up & Down':
+                newPosition.y += 1 + Math.sin(time * speed);
+                break;
+            case 'Random':
+                const qixTime = time;
+                if (qixTime > qixMotionStartTime + qixMotionDuration) {
+                    qixMotionStartTime = qixTime;
+                    qixMotionDuration = Math.random() * 3 + 2; // Move for 2-5 seconds
+                    randomMotionStartPosition.copy(target.position);
+
+                    qixMotionDirection.set(
+                        Math.random() - 0.5,
+                        Math.random() - 0.5,
+                        Math.random() - 0.5
+                    ).normalize();
+                }
+
+                const deltaTime = time - (lastTimestamp > 0 ? lastTimestamp : time);
+                lastTimestamp = time;
+
+                const qixSpeedFactor = 0.2;
+                const moveStep = qixSpeedFactor * speed * deltaTime;
+
+                newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
+
+                const distance = -target.userData.shootingPosition.z;
+                const directionFromOrigin = newPosition.clone().normalize();
+                newPosition.copy(directionFromOrigin).multiplyScalar(distance);
+
+                if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
+                    newPosition.y = floorBody.translation().y + 1.0;
+                }
+                break;
+        }
+
+        target.position.copy(newPosition);
+        target.userData.body.setNextKinematicTranslation(newPosition, true);
+        target.lookAt(camera.position);
+        target.userData.body.setNextKinematicRotation(target.quaternion, true);
+    }
+
+
     if (gameState === GameState.RESETTING) {
+        isScoreboardVisible = scoreboardStateBeforeInspection;
         cleanupRound();
         gameState = GameState.SHOOTING;
         console.log("Returning to SHOOTING state.");
@@ -922,7 +1256,21 @@ if (bowController) {
     myLine.geometry.attributes.position.needsUpdate = true;
 }
 
-    if (arrowController && arrowObject && arrowObject.body && bowController) {
+    // --- Proximity Nocking ---
+    if (arrowObject && !arrowObject.isNocked && bowController && arrowController) {
+        const bowHand = renderer.xr.getController(bowController.userData.id);
+        const arrowHand = renderer.xr.getController(arrowController.userData.id);
+        const distance = bowHand.position.distanceTo(arrowHand.position);
+        if (distance < 0.1 && gameState === GameState.SHOOTING) { // 10cm threshold
+            console.log("Nocking arrow by proximity.");
+            arrowObject.isNocked = true;
+            // Detach arrow from controller and add to scene to allow independent drawing motion.
+            scene.attach(arrowObject.mesh);
+        }
+    }
+
+    // --- Arrow Drawing Logic (only when nocked) ---
+    if (arrowController && arrowObject && arrowObject.isNocked && arrowObject.body && bowController) {
         const arrowHand = renderer.xr.getController(arrowController.userData.id);
         const bowHand = renderer.xr.getController(bowController.userData.id);
         const arrowBody = arrowObject.body;
@@ -930,51 +1278,29 @@ if (bowController) {
         const { forward: localForward, nock: localNock, length: arrowLength } = arrowTemplate.userData;
         offsetDirection = (bowController.userData.id === 0) ? 1 : -1; // Left hand is 0, right is 1
         LOCAL_LEFT = new THREE.Vector3(offsetDirection, 0, 0);
-        console.log(offsetDirection);
-
-        // 2. Transform the local "left" vector into a world-space direction.
-
-
-
-
 
         const worldLeftDirection = LOCAL_LEFT.clone().applyQuaternion(bowHand.quaternion);
 
-        // 3. Calculate the arrow rest position by starting at the bow hand and moving along the new direction.
         const arrowRestPosition = new THREE.Vector3()
             .copy(bowHand.position)
             .add(worldLeftDirection.multiplyScalar(OFFSET_DISTANCE));
 
-        // 2. Calculate the direction from the arrow hand to the arrow rest.
         const directionToRest = new THREE.Vector3().subVectors(arrowRestPosition, arrowHand.position);
-
-        // 3. The actual draw direction is from the arrow rest back towards the arrow hand.
         const drawDirection = directionToRest.clone().negate().normalize();
-
-        // 4. Calculate and clamp the draw distance.
         const drawDistance = directionToRest.length();
         const clampedDrawDistance = Math.min(drawDistance, arrowLength);
-
-        // 5. Calculate the clamped nock position. It's pulled back from the arrow rest along the draw direction.
         const clampedNockPosition = new THREE.Vector3().copy(arrowRestPosition).add(drawDirection.clone().multiplyScalar(clampedDrawDistance));
 
-        // 6. The arrow's rotation is based on pointing from the nock to the rest.
         const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, drawDirection.clone().negate());
         mesh.quaternion.copy(rotation);
 
-        // 7. Calculate the rotated nock offset from the arrow's origin.
         const rotatedNockOffset = localNock.clone().applyQuaternion(rotation);
-
-        // 8. Set the arrow's final position. Its origin is the nock's position minus the offset.
         mesh.position.copy(clampedNockPosition).sub(rotatedNockOffset);
 
-        // 9. Update the physics body to match the visual mesh.
         arrowBody.setNextKinematicTranslation(mesh.position);
         arrowBody.setNextKinematicRotation(mesh.quaternion);
 
-        // 10. The bowstring should connect to the nock's world position.
         arrowObject.nockPosition = clampedNockPosition;
-
     } else if (arrowObject) {
         arrowObject.nockPosition = null;
     }
