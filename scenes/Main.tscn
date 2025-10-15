@@ -1,0 +1,22 @@
+[gd_scene load_steps=3 format=3 uid="uid://b5w7f1j1v1w1k"]
+
+[ext_resource type="Script" path="res://scripts/Player.gd" id="1_wexyq"]
+[ext_resource type="PackedScene" uid="uid://c1vqya8h4x7qg" path="res://scenes/Target.tscn" id="2_abcde"]
+
+[node name="Main" type="Node3D"]
+
+[node name="XROrigin3D" type="XROrigin3D" parent="."]
+script = ExtResource("1_wexyq")
+
+[node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 0)
+
+[node name="LeftController" type="XRController3D" parent="XROrigin3D"]
+tracker = &"left_hand"
+
+[node name="RightController" type="XRController3D" parent="XROrigin3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+tracker = &"right_hand"
+
+[node name="Target" parent="." instance=ExtResource("2_abcde")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, -3)
