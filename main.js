@@ -142,6 +142,84 @@ class Scoreboard {
 /**
  * A class for creating and managing a visual in-VR menu.
  */
+class BowHUD {
+    constructor() {
+        this.canvas = document.createElement('canvas');
+        this.canvas.width = 512; // A good resolution for clarity
+        this.canvas.height = 256;
+        this.context = this.canvas.getContext('2d');
+
+        this.texture = new THREE.CanvasTexture(this.canvas);
+        this.texture.encoding = THREE.sRGBEncoding;
+        this.texture.anisotropy = 16;
+
+        const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true });
+        // Aspect ratio is 2:1 (512x256), so the plane should be e.g., 0.4 x 0.2
+        const geometry = new THREE.PlaneGeometry(0.4, 0.2);
+        this.mesh = new THREE.Mesh(geometry, material);
+        this.mesh.visible = false; // Initially hidden
+
+        this.clear(); // Draw the initial empty HUD
+    }
+
+    clear() {
+        const ctx = this.context;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = 'rgba(0, 20, 40, 0.7)'; // Semi-transparent dark blue
+        ctx.fillRect(0, 0, w, h);
+
+        this.texture.needsUpdate = true;
+    }
+
+    update(data) {
+        this.clear();
+        const ctx = this.context;
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 32px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        // --- Scores ---
+        const scoresText = data.scores.join(' | ');
+        ctx.fillText(`Scores: ${scoresText}`, 15, 15);
+
+
+        if (data.lastArrow) {
+            const arrowData = data.lastArrow;
+            ctx.font = '28px sans-serif';
+
+            // --- Speed ---
+            const speed = arrowData.speed.toFixed(2);
+            const topSpeed = arrowData.topSpeed.toFixed(2);
+            ctx.fillText(`Speed: ${speed} m/s (Top: ${topSpeed})`, 15, 65);
+
+            // --- Distance ---
+            ctx.fillStyle = arrowData.isMoving ? 'lime' : 'red';
+            const distance = arrowData.distance.toFixed(2);
+            ctx.fillText(`Distance: ${distance} m`, 15, 110);
+
+            // --- Altitude ---
+            ctx.fillStyle = 'white';
+            const altitude = arrowData.altitude.toFixed(2);
+            const maxAltitude = arrowData.maxAltitude.toFixed(2);
+            ctx.fillText(`Altitude: ${altitude} m (Max: ${maxAltitude})`, 15, 155);
+        }
+
+
+        this.texture.needsUpdate = true;
+    }
+
+    getMesh() {
+        return this.mesh;
+    }
+}
+
 class Menu {
     constructor() {
         this.canvas = document.createElement('canvas');
@@ -301,6 +379,7 @@ let bow, target, bowstring;
 let arrowTemplate;
 let arrowObject = null;
 let firedArrows = []; // Master list of all arrows shot in the current 12-shot game
+let lastFiredArrow = null;
 let currentRoundArrows = []; // The 3 arrows being processed after a round
 
 // --- Game Data and State ---
@@ -308,6 +387,9 @@ let gameHistory = [];
 let currentGame = null;
 let runningTotal = 0;
 let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for history.
+
+// --- HUD ---
+let bowHUD;
 
 // --- Menu ---
 let menu;
@@ -400,6 +482,10 @@ async function init() {
     // Create and add the menu
     menu = new Menu();
     scene.add(menu.getMesh());
+
+    // Create the Bow HUD
+    bowHUD = new BowHUD();
+    scene.add(bowHUD.getMesh());
 
 
     startNewGame();
@@ -506,7 +592,14 @@ function onSelectStart(event) {
                     body: body,
                     isNocked: false, // New state for nocking
                     hasScored: false,
-                    score: 'M'
+                    score: 'M',
+                    // HUD-specific data
+                    speed: 0,
+                    topSpeed: 0,
+                    distance: 0,
+                    altitude: 0,
+                    maxAltitude: 0,
+                    isMoving: false
                 };
                 collider.userData = { type: 'arrow', arrow: arrowObject };
 
@@ -814,7 +907,9 @@ function shootArrow() {
 
     body.setLinvel(worldDirection.multiplyScalar(speed), true);
 
+    arrowObject.isMoving = true;
     firedArrows.push(arrowObject);
+    lastFiredArrow = arrowObject;
 
     // State transition is now handled in the animate loop once all arrows have landed.
 
@@ -917,6 +1012,7 @@ function animate(timestamp, frame) {
 
             console.log(`Arrow hit target for score: ${arrow.score}`);
 
+            arrow.isMoving = false;
             if (arrow.score === 'M') {
                 if (arrow.body) {
                     arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
@@ -1219,6 +1315,34 @@ function animate(timestamp, frame) {
         const finalRotation = controller.quaternion.clone().multiply(offsetRotation);
         bow.position.copy(controller.position);
         bow.quaternion.copy(finalRotation);
+
+        if (bowHUD) {
+            const hudMesh = bowHUD.getMesh();
+            hudMesh.visible = true;
+
+            // Position the HUD to the right of the bow
+            const rightDirection = new THREE.Vector3(-offsetDirection, 0, 0).applyQuaternion(controller.quaternion);
+            hudMesh.position.copy(controller.position).add(rightDirection.multiplyScalar(0.3)); // 30cm to the right
+
+            // Make the HUD face the camera/user
+            hudMesh.quaternion.copy(camera.quaternion);
+        }
+    } else {
+        if (bowHUD) bowHUD.getMesh().visible = false;
+    }
+
+    if (bowHUD && bowHUD.getMesh().visible) {
+        // Determine which arrows' scores to show (the current round's)
+        const roundSize = 3;
+        const currentRoundIndex = Math.floor(currentGame.scores.length / roundSize);
+        const startIndex = currentRoundIndex * roundSize;
+        const relevantArrows = firedArrows.slice(startIndex, startIndex + roundSize);
+        const scores = relevantArrows.map(a => a.score);
+
+        bowHUD.update({
+            scores: scores,
+            lastArrow: lastFiredArrow
+        });
     }
 
 
@@ -1312,10 +1436,18 @@ if (bowController) {
             obj.mesh.position.copy(obj.body.translation());
 
             const velocity = obj.body.linvel();
-            const speedSq = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
+            const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
+
+            // Update HUD data
+            obj.speed = speed;
+            obj.topSpeed = Math.max(obj.topSpeed, speed);
+            obj.distance = obj.mesh.position.distanceTo(camera.position);
+            obj.altitude = obj.mesh.position.y - (floorBody ? floorBody.translation().y : 0);
+            obj.maxAltitude = Math.max(obj.maxAltitude, obj.altitude);
+
 
             // For arrows in flight with significant velocity, align their visual mesh with the velocity vector
-            if (obj.body.isDynamic() && speedSq > 0.01 && arrowTemplate) {
+            if (obj.body.isDynamic() && speed > 0.1 && arrowTemplate) {
                 const worldVelocity = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
                 const localForward = arrowTemplate.userData.forward;
 
