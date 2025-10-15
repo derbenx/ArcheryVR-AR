@@ -903,19 +903,24 @@ console.log(target);
         const center = arrowBox.getCenter(new THREE.Vector3());
 
         // Determine the longest axis and assume the tip is at the negative end and nock at the positive end.
+        const localTip = new THREE.Vector3();
         if (arrowSize.x === maxDim) {
             localForward.set(-1, 0, 0);
             localNock.set(arrowBox.max.x, center.y, center.z);
+            localTip.set(arrowBox.min.x, center.y, center.z);
         } else if (arrowSize.y === maxDim) {
             localForward.set(0, -1, 0);
             localNock.set(center.x, arrowBox.max.y, center.z);
+            localTip.set(center.x, arrowBox.min.y, center.z);
         } else {
             localForward.set(0, 0, -1);
             localNock.set(center.x, center.y, arrowBox.max.z);
+            localTip.set(center.x, center.y, arrowBox.min.z);
         }
 
         arrowTemplate.userData.forward = localForward;
         arrowTemplate.userData.nock = localNock;
+        arrowTemplate.userData.tip = localTip;
 
         arrowTemplate.visible = false;
     }
@@ -1494,8 +1499,10 @@ if (bowController) {
         arrowBody.setNextKinematicRotation(mesh.quaternion);
 
         // Also update the angle for the HUD while nocked
-        const forwardVector = new THREE.Vector3(0, 0, -1).applyQuaternion(mesh.quaternion);
-        arrowObject.angle = Math.asin(forwardVector.y) * (180 / Math.PI);
+        const worldTip = arrowTemplate.userData.tip.clone().applyMatrix4(mesh.matrixWorld);
+        const worldNock = localNock.clone().applyMatrix4(mesh.matrixWorld);
+        const arrowVector = new THREE.Vector3().subVectors(worldTip, worldNock);
+        arrowObject.angle = Math.atan2(arrowVector.y, Math.sqrt(arrowVector.x * arrowVector.x + arrowVector.z * arrowVector.z)) * (180 / Math.PI);
 
         arrowObject.nockPosition = clampedNockPosition;
     } else if (arrowObject) {
@@ -1522,16 +1529,18 @@ if (bowController) {
             // For arrows in flight with significant velocity, align their visual mesh with the velocity vector
             if (obj.body.isDynamic() && speed > 0.1 && arrowTemplate) {
                 const worldVelocity = new THREE.Vector3(velocity.x, velocity.y, velocity.z).normalize();
-
-                // Calculate angle
-                obj.angle = Math.asin(worldVelocity.y) * (180 / Math.PI);
-
                 const localForward = arrowTemplate.userData.forward;
 
                 // Create a quaternion that rotates the local forward vector to align with the world velocity
                 const rotation = new THREE.Quaternion().setFromUnitVectors(localForward, worldVelocity);
                 obj.body.setRotation(rotation, true);
             }
+
+            // Calculate angle based on geometry
+            const worldTip = arrowTemplate.userData.tip.clone().applyMatrix4(obj.mesh.matrixWorld);
+            const worldNock = arrowTemplate.userData.nock.clone().applyMatrix4(obj.mesh.matrixWorld);
+            const arrowVector = new THREE.Vector3().subVectors(worldTip, worldNock);
+            obj.angle = Math.atan2(arrowVector.y, Math.sqrt(arrowVector.x * arrowVector.x + arrowVector.z * arrowVector.z)) * (180 / Math.PI);
             // Always update the mesh quaternion from the physics body
             obj.mesh.quaternion.copy(obj.body.rotation());
         }
