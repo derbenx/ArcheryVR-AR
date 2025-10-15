@@ -396,6 +396,10 @@ let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for hist
 let bowHUD;
 let hudScores = [];
 let isHudVisible = true;
+let isArrowCamVisible = true;
+let arrowCamera;
+let arrowCamViewer;
+let arrowCamRenderTarget;
 
 // --- Menu ---
 let menu;
@@ -493,7 +497,25 @@ async function init() {
     bowHUD = new BowHUD();
     scene.add(bowHUD.getMesh());
 
+    // --- Arrow Camera Setup ---
+    // The size of the render target determines the resolution of the arrow cam view.
+    arrowCamRenderTarget = new THREE.WebGLRenderTarget(512, 512, {
+        encoding: THREE.sRGBEncoding
+    });
 
+    // Create the second camera for the arrow.
+    arrowCamera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+    scene.add(arrowCamera);
+
+    // Create the viewer plane.
+    const viewerGeometry = new THREE.PlaneGeometry(0.3, 0.3);
+    const viewerMaterial = new THREE.MeshBasicMaterial({ map: arrowCamRenderTarget.texture });
+    arrowCamViewer = new THREE.Mesh(viewerGeometry, viewerMaterial);
+    arrowCamViewer.visible = false;
+    scene.add(arrowCamViewer);
+
+
+    loadSettings();
     startNewGame();
 
 
@@ -561,6 +583,11 @@ function onSelectStart(event) {
             }
         }
         return; // Prevent other actions
+    }
+
+    // --- Arrow Cam Deactivation ---
+    if (arrowCamViewer) {
+        arrowCamViewer.visible = false;
     }
 
     // --- Arrow Spawning ---
@@ -672,6 +699,7 @@ async function placeScene(floorY) {
         options.push({ name: "Scoreboard", submenu: "scoreboard" });
         options.push({ name: "Aim Assist", submenu: "aim" });
         options.push({ name: "HUD", submenu: "hud" });
+        options.push({ name: "Arrow Cam", submenu: "arrowCam" });
         options.push({ name: "Help", submenu: "help" });
         return options;
     };
@@ -680,28 +708,36 @@ async function placeScene(floorY) {
         title: "Main Menu",
         getOptions: getMainMenuOptions, // Use a function to generate options
         submenus: {
+            arrowCam: {
+                title: "Arrow Cam",
+                parent: "root",
+                options: [
+                    { name: "On", action: () => { isArrowCamVisible = true; saveSettings(); } },
+                    { name: "Off", action: () => { isArrowCamVisible = false; saveSettings(); } }
+                ]
+            },
             hud: {
                 title: "HUD",
                 parent: "root",
                 options: [
-                    { name: "On", action: () => { isHudVisible = true; } },
-                    { name: "Off", action: () => { isHudVisible = false; } }
+                    { name: "On", action: () => { isHudVisible = true; saveSettings(); } },
+                    { name: "Off", action: () => { isHudVisible = false; saveSettings(); } }
                 ]
             },
             scoreboard: {
                 title: "Scoreboard",
                 parent: "root",
                 options: [
-                    { name: "Show", action: () => { isScoreboardVisible = true; } },
-                    { name: "Hide", action: () => { isScoreboardVisible = false; } }
+                    { name: "Show", action: () => { isScoreboardVisible = true; saveSettings(); } },
+                    { name: "Hide", action: () => { isScoreboardVisible = false; saveSettings(); } }
                 ]
             },
             aim: {
                 title: "Aim Assist",
                 parent: "root",
                 options: [
-                    { name: "On", action: () => { isAimAssistVisible = true; } },
-                    { name: "Off", action: () => { isAimAssistVisible = false; } }
+                    { name: "On", action: () => { isAimAssistVisible = true; saveSettings(); } },
+                    { name: "Off", action: () => { isAimAssistVisible = false; saveSettings(); } }
                 ]
             },
             help: {
@@ -1345,8 +1381,16 @@ function animate(timestamp, frame) {
                 hudMesh.quaternion.copy(camera.quaternion);
             }
         }
+        if (arrowCamViewer) {
+            // Position the Arrow Cam viewer above the HUD
+            const rightDirection = new THREE.Vector3(-offsetDirection, 0, 0).applyQuaternion(controller.quaternion);
+            arrowCamViewer.position.copy(controller.position).add(rightDirection.multiplyScalar(0.3)).add(new THREE.Vector3(0, 0.25, 0).applyQuaternion(controller.quaternion));
+            arrowCamViewer.quaternion.copy(camera.quaternion);
+        }
+
     } else {
         if (bowHUD) bowHUD.getMesh().visible = false;
+        if (arrowCamViewer) arrowCamViewer.visible = false;
     }
 
     if (bowHUD && isHudVisible && bowHUD.getMesh().visible) {
@@ -1514,6 +1558,23 @@ if (bowController) {
         bowstring.geometry.computeBoundingSphere();
     }
 
+    // --- Arrow Cam Rendering ---
+    if (isArrowCamVisible && lastFiredArrow && lastFiredArrow.isMoving && lastFiredArrow.distance > 9) {
+        arrowCamViewer.visible = true;
+
+        // Position the arrow camera behind and slightly above the arrow
+        const arrowMesh = lastFiredArrow.mesh;
+        const offset = new THREE.Vector3(0, 0.1, 0.5).applyQuaternion(arrowMesh.quaternion);
+        arrowCamera.position.copy(arrowMesh.position).add(offset);
+        arrowCamera.lookAt(arrowMesh.position);
+
+        // Render the arrow camera's view to the render target
+        renderer.setRenderTarget(arrowCamRenderTarget);
+        renderer.render(scene, arrowCamera);
+        renderer.setRenderTarget(null); // Reset render target
+    }
+
+
     rapierDebugRenderer.update();
     renderer.render(scene, camera);
 }
@@ -1615,6 +1676,27 @@ function calculateGameTotals(game) {
     game.runningTotal = runningTotal + game.dozenTotal;
 
     return game;
+}
+
+function saveSettings() {
+    const settings = {
+        isScoreboardVisible,
+        isAimAssistVisible,
+        isHudVisible,
+        isArrowCamVisible
+    };
+    localStorage.setItem('archerySettings', JSON.stringify(settings));
+}
+
+function loadSettings() {
+    const savedSettings = localStorage.getItem('archerySettings');
+    if (savedSettings) {
+        const settings = JSON.parse(savedSettings);
+        isScoreboardVisible = settings.isScoreboardVisible ?? true;
+        isAimAssistVisible = settings.isAimAssistVisible ?? true;
+        isHudVisible = settings.isHudVisible ?? true;
+        isArrowCamVisible = settings.isArrowCamVisible ?? true;
+    }
 }
 
 
