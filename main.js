@@ -1339,7 +1339,61 @@ function animate(timestamp, frame) {
             case 'Up & Down':
                 newPosition.y += 1 + Math.sin(time * speed);
                 break;
-            case 'Random Sitting': //keep target within sight while seated. -45deg left, 45deg right
+            case 'Random Sitting': //keep target within sight while seated. -40deg left, 40deg right
+                qixTime = time;
+                if (qixTime > qixMotionStartTime + qixMotionDuration) {
+                    qixMotionStartTime = qixTime;
+                    qixMotionDuration = Math.random() * 8 + 2; // Move for 2-10 seconds
+                    randomMotionStartPosition.copy(target.position);
+
+                    qixMotionDirection.set(
+                        Math.random() - 0.5,
+                        Math.random() - 0.5,
+                        Math.random() - 0.5
+                    ).normalize();
+                }
+
+                deltaTime = time - (lastTimestamp > 0 ? lastTimestamp : time);
+                lastTimestamp = time;
+
+                qixSpeedFactor = 0.2;
+                moveStep = qixSpeedFactor * speed * deltaTime;
+
+                newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
+
+                const maxAngle = 40 * (Math.PI / 180); // 40 degrees in radians
+                const currentAngle = Math.atan2(newPosition.x, -newPosition.z);
+
+                if (Math.abs(currentAngle) > maxAngle) {
+                    const clampedAngle = Math.sign(currentAngle) * maxAngle;
+
+                    const yPosition = newPosition.y;
+                    const xzMagnitude = Math.sqrt(newPosition.x * newPosition.x + newPosition.z * newPosition.z);
+
+                    newPosition.x = xzMagnitude * Math.sin(clampedAngle);
+                    newPosition.z = -xzMagnitude * Math.cos(clampedAngle);
+                    newPosition.y = yPosition;
+
+                    // Reflect the motion direction
+                    let normal;
+                    if (currentAngle > maxAngle) { // Right boundary
+                        normal = new THREE.Vector3(-Math.cos(maxAngle), 0, Math.sin(maxAngle));
+                    } else { // Left boundary
+                        normal = new THREE.Vector3(Math.cos(maxAngle), 0, Math.sin(maxAngle));
+                    }
+                    qixMotionDirection.reflect(normal);
+                }
+
+
+                distance = -target.userData.shootingPosition.z;
+                directionFromOrigin = newPosition.clone().normalize();
+                newPosition.copy(directionFromOrigin).multiplyScalar(distance);
+
+                if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
+                    newPosition.y = floorBody.translation().y + 1.0;
+                }
+                break;
+            case 'Random Standing': //360 shooting.
                 qixTime = time;
                 if (qixTime > qixMotionStartTime + qixMotionDuration) {
                     qixMotionStartTime = qixTime;
@@ -1363,36 +1417,6 @@ function animate(timestamp, frame) {
 
                 distance = -target.userData.shootingPosition.z;
                 directionFromOrigin = newPosition.clone().normalize();
-                newPosition.copy(directionFromOrigin).multiplyScalar(distance);
-
-                if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
-                    newPosition.y = floorBody.translation().y + 1.0;
-                }
-                break;
-                case 'Random Standing': //360 shooting.
-                qixTime = time;
-                if (qixTime > qixMotionStartTime + qixMotionDuration) {
-                    qixMotionStartTime = qixTime;
-                    qixMotionDuration = Math.random() * 8 + 2; // Move for 2-10 seconds
-                    randomMotionStartPosition.copy(target.position);
-
-                    qixMotionDirection.set(
-                        Math.random() - 0.5,
-                        Math.random() - 0.5,
-                        Math.random() - 0.5
-                    ).normalize();
-                }
-
-                const deltaTime = time - (lastTimestamp > 0 ? lastTimestamp : time);
-                lastTimestamp = time;
-
-                const qixSpeedFactor = 0.2;
-                const moveStep = qixSpeedFactor * speed * deltaTime;
-
-                newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
-
-                const distance = -target.userData.shootingPosition.z;
-                const directionFromOrigin = newPosition.clone().normalize();
                 newPosition.copy(directionFromOrigin).multiplyScalar(distance);
 
                 if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
