@@ -1580,6 +1580,14 @@ if (bowController) {
             //if (obj.altitude<0) { collisions.get(arrowHandle).scores.push('M'); }
             obj.maxAltitude = Math.max(obj.maxAltitude, obj.altitude);
 
+            if (obj.altitude < 0 && !obj.hasScored) {
+                obj.hasScored = true;
+                obj.score = 'M';
+                obj.isMoving = false;
+                if (obj.body) {
+                    obj.body.setBodyType(RAPIER.RigidBodyType.Fixed);
+                }
+            }
 
             // For arrows in flight with significant velocity, align their visual mesh with the velocity vector
             if (obj.body.isDynamic() && speed > 0.1 && arrowTemplate) {
