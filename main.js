@@ -614,6 +614,8 @@ function onSelectStart(event) {
 
                 const newArrowMesh = arrowTemplate.clone();
                 newArrowMesh.visible = true;
+                newArrowMesh.position.z = .3;
+                //console.log(newArrowMesh);
 
                 // Create physics body
                 const arrowBodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
@@ -1320,7 +1322,7 @@ function animate(timestamp, frame) {
         const speedMap = { Slow: 0.5, Medium: 1.0, Fast: 2.0 };
         let speed;
 
-        if (targetMotionSpeed === 'Random Standing' || targetMotionSpeed === 'Random Sitting') {
+        if (targetMotionSpeed === 'Random Standing' || targetMotionSpeed === 'Random Seated') {
             const slow = speedMap.Slow;
             const fast = speedMap.Fast;
             const speedRange = (fast - slow) / 2;
@@ -1339,7 +1341,62 @@ function animate(timestamp, frame) {
             case 'Up & Down':
                 newPosition.y += 1 + Math.sin(time * speed);
                 break;
-            case 'Random Sitting': //keep target within sight while seated. -45deg left, 45deg right
+            case 'Random Seated': //keep target within sight while seated. -40deg left, 40deg right
+                qixTime = time;
+                if (qixTime > qixMotionStartTime + qixMotionDuration) {
+                    qixMotionStartTime = qixTime;
+                    qixMotionDuration = Math.random() * 8 + 2; // Move for 2-10 seconds
+                    randomMotionStartPosition.copy(target.position);
+
+                    qixMotionDirection.set(
+                        Math.random() - 0.5,
+                        Math.random() - 0.5,
+                        Math.random() - 0.5
+                    ).normalize();
+                }
+
+                deltaTime = time - (lastTimestamp > 0 ? lastTimestamp : time);
+                lastTimestamp = time;
+
+                qixSpeedFactor = 0.2;
+                moveStep = qixSpeedFactor * speed * deltaTime;
+
+                newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
+
+                // Project the new position back onto the sphere of the correct radius
+                distance = -target.userData.shootingPosition.z;
+                newPosition.normalize().multiplyScalar(distance);
+                
+                const maxAngle = 40 * (Math.PI / 180); // 40 degrees in radians
+                const currentAngle = Math.atan2(newPosition.x, -newPosition.z);
+
+                if (Math.abs(currentAngle) > maxAngle) {
+                    const clampedAngle = Math.sign(currentAngle) * maxAngle;
+
+                    const xzMagnitude = Math.sqrt(newPosition.x * newPosition.x + newPosition.z * newPosition.z);
+
+                    newPosition.x = xzMagnitude * Math.sin(clampedAngle);
+                    newPosition.z = -xzMagnitude * Math.cos(clampedAngle);
+
+
+                    // Reflect the motion direction
+                    let normal;
+                    if (currentAngle > maxAngle) { // Right boundary
+                        normal = new THREE.Vector3(-Math.cos(maxAngle), 0, -Math.sin(maxAngle));
+                    } else { // Left boundary
+                        normal = new THREE.Vector3(Math.cos(maxAngle), 0, -Math.sin(maxAngle));
+                    }
+                    qixMotionDirection.reflect(normal);
+                }
+                //distance = -target.userData.shootingPosition.z;
+               // directionFromOrigin = newPosition.clone().normalize();
+                //newPosition.copy(directionFromOrigin).multiplyScalar(distance);
+
+                if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
+                    newPosition.y = floorBody.translation().y + 1.0;
+                }
+                break;
+                case 'Random Standing': //360 shooting.
                 qixTime = time;
                 if (qixTime > qixMotionStartTime + qixMotionDuration) {
                     qixMotionStartTime = qixTime;
@@ -1362,38 +1419,9 @@ function animate(timestamp, frame) {
                 newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
 
                 distance = -target.userData.shootingPosition.z;
-                directionFromOrigin = newPosition.clone().normalize();
-                newPosition.copy(directionFromOrigin).multiplyScalar(distance);
-
-                if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
-                    newPosition.y = floorBody.translation().y + 1.0;
-                }
-                break;
-                case 'Random Standing': //360 shooting.
-                qixTime = time;
-                if (qixTime > qixMotionStartTime + qixMotionDuration) {
-                    qixMotionStartTime = qixTime;
-                    qixMotionDuration = Math.random() * 8 + 2; // Move for 2-10 seconds
-                    randomMotionStartPosition.copy(target.position);
-
-                    qixMotionDirection.set(
-                        Math.random() - 0.5,
-                        Math.random() - 0.5,
-                        Math.random() - 0.5
-                    ).normalize();
-                }
-
-                const deltaTime = time - (lastTimestamp > 0 ? lastTimestamp : time);
-                lastTimestamp = time;
-
-                const qixSpeedFactor = 0.2;
-                const moveStep = qixSpeedFactor * speed * deltaTime;
-
-                newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
-
-                const distance = -target.userData.shootingPosition.z;
-                const directionFromOrigin = newPosition.clone().normalize();
-                newPosition.copy(directionFromOrigin).multiplyScalar(distance);
+                //directionFromOrigin = newPosition.clone().normalize();
+                //newPosition.copy(directionFromOrigin).multiplyScalar(distance);
+                newPosition.normalize().multiplyScalar(distance);
 
                 if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
                     newPosition.y = floorBody.translation().y + 1.0;
@@ -1575,11 +1603,19 @@ if (bowController) {
             obj.topSpeed = Math.max(obj.topSpeed, speed);
             obj.distance = obj.mesh.position.distanceTo(camera.position);
             obj.altitude = obj.mesh.position.y - (floorBody ? floorBody.translation().y : 0);
-            alt=obj.altitude;
+            //alt=obj.altitude;
             //console.log("AO:",obj);
             //if (obj.altitude<0) { collisions.get(arrowHandle).scores.push('M'); }
             obj.maxAltitude = Math.max(obj.maxAltitude, obj.altitude);
 
+            if (obj.altitude < 0 && !obj.hasScored) {
+                obj.hasScored = true;
+                obj.score = 'M';
+                obj.isMoving = false;
+                if (obj.body) {
+                    obj.body.setBodyType(RAPIER.RigidBodyType.Fixed);
+                }
+            }
 
             // For arrows in flight with significant velocity, align their visual mesh with the velocity vector
             if (obj.body.isDynamic() && speed > 0.1 && arrowTemplate) {
