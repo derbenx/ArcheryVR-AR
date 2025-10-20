@@ -886,9 +886,7 @@ console.log(target);
     if (bow) {
         scene.add(bow);
         bow.visible = false;
-        //bow.geometry.computeBoundingBox();
-        const bowBox = bow.geometry.boundingBox;
-        //const bowBox = new THREE.Box3().setFromObject(bow);
+        const bowBox = new THREE.Box3().setFromObject(bow);
         const bowSize = bowBox.getSize(new THREE.Vector3());
         const bowCenter = bowBox.getCenter(new THREE.Vector3());
 
@@ -1361,33 +1359,30 @@ function animate(timestamp, frame) {
 
                 newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
 
+                // Project the new position back onto the sphere of the correct radius
+                distance = -target.userData.shootingPosition.z;
+                newPosition.normalize().multiplyScalar(distance);
+
                 const maxAngle = 40 * (Math.PI / 180); // 40 degrees in radians
                 const currentAngle = Math.atan2(newPosition.x, -newPosition.z);
 
                 if (Math.abs(currentAngle) > maxAngle) {
+                    // If the new position is outside the allowed arc, clamp it
                     const clampedAngle = Math.sign(currentAngle) * maxAngle;
-
-                    const yPosition = newPosition.y;
                     const xzMagnitude = Math.sqrt(newPosition.x * newPosition.x + newPosition.z * newPosition.z);
-
                     newPosition.x = xzMagnitude * Math.sin(clampedAngle);
                     newPosition.z = -xzMagnitude * Math.cos(clampedAngle);
-                    newPosition.y = yPosition;
 
-                    // Reflect the motion direction
+                    // And reflect the direction vector for the next frame
                     let normal;
-                    if (currentAngle > maxAngle) { // Right boundary
-                        normal = new THREE.Vector3(-Math.cos(maxAngle), 0, Math.sin(maxAngle));
+                     if (currentAngle > maxAngle) { // Right boundary
+                        normal = new THREE.Vector3(-Math.cos(maxAngle), 0, -Math.sin(maxAngle));
                     } else { // Left boundary
-                        normal = new THREE.Vector3(Math.cos(maxAngle), 0, Math.sin(maxAngle));
+                        normal = new THREE.Vector3(Math.cos(maxAngle), 0, -Math.sin(maxAngle));
                     }
                     qixMotionDirection.reflect(normal);
                 }
 
-
-                distance = -target.userData.shootingPosition.z;
-                directionFromOrigin = newPosition.clone().normalize();
-                newPosition.copy(directionFromOrigin).multiplyScalar(distance);
 
                 if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
                     newPosition.y = floorBody.translation().y + 1.0;
@@ -1415,9 +1410,9 @@ function animate(timestamp, frame) {
 
                 newPosition.copy(target.position).addScaledVector(qixMotionDirection, moveStep);
 
+                // Project the new position back onto the sphere of the correct radius
                 distance = -target.userData.shootingPosition.z;
-                directionFromOrigin = newPosition.clone().normalize();
-                newPosition.copy(directionFromOrigin).multiplyScalar(distance);
+                newPosition.normalize().multiplyScalar(distance);
 
                 if (floorBody && newPosition.y < floorBody.translation().y + 1.0) {
                     newPosition.y = floorBody.translation().y + 1.0;
