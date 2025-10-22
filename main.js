@@ -14,217 +14,6 @@ let sty=0; //start and scoring height
 const OFFSET_DISTANCE = 0.015;
 let offsetDirection,LOCAL_LEFT;
 
-/**
- * A class for creating and managing a visual scoreboard in a Three.js scene.
- * All calculation and state management is handled externally.
- */
-class Scoreboard {
-    constructor() {
-        this.canvas = document.createElement('canvas');
-        this.canvas.width = 2048; // High-resolution canvas for clarity
-        this.canvas.height = 256;
-        this.context = this.canvas.getContext('2d');
-
-        this.texture = new THREE.CanvasTexture(this.canvas);
-        this.texture.encoding = THREE.sRGBEncoding;
-        this.texture.anisotropy = 16;
-
-        // Plane geometry is sized to match the new aspect ratio
-        const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, side: THREE.DoubleSide });
-        const geometry = new THREE.PlaneGeometry(4.2, 0.5);
-        this.mesh = new THREE.Mesh(geometry, material);
-
-        this.headers = ["#", "1", "2", "3", "4", "5", "6", "END", "7", "8", "9", "10", "11", "12", "END", "H", "G", "Dz", "R/T"];
-
-        this.drawEmptyBoard(); // Draw the initial empty board
-    }
-
-    /**
-     * Draws the static background, grid, and headers for the scoreboard.
-     */
-    drawEmptyBoard() {
-        const ctx = this.context;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-
-        // Background
-        ctx.fillStyle = '#003366';
-        ctx.fillRect(0, 0, w, h);
-
-        // Grid and Headers
-        ctx.strokeStyle = 'white';
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 36px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-
-        const cellWidth = w / this.headers.length;
-
-        this.headers.forEach((header, i) => {
-            const x = i * cellWidth;
-            ctx.strokeRect(x, 0, cellWidth, h / 2); // Header boxes
-            ctx.fillText(header, x + cellWidth / 2, h * 0.25);
-            ctx.strokeRect(x, h / 2, cellWidth, h / 2); // Empty score boxes
-        });
-
-        this.texture.needsUpdate = true;
-    }
-
-    /**
-     * Displays a complete game's data on the scoreboard.
-     * @param {object} gameData - An object containing all data for one game.
-     * Example: { gameNumber: 1, scores: ['X', '10', ...], end1Total: 55, ... }
-     */
-    displayGame(gameData) {
-        this.drawEmptyBoard(); // Start with a clean slate
-
-        const ctx = this.context;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-        const cellWidth = w / this.headers.length;
-        const scoreY = h * 0.75;
-
-        ctx.fillStyle = 'white';
-        ctx.font = '48px sans-serif';
-
-        // --- Draw Game Number ---
-        ctx.fillText(`#${gameData.gameNumber}`, cellWidth / 2, scoreY);
-
-        // --- Draw Individual Arrow Scores ---
-        const getCellIndex = (scoreIndex) => {
-            if (scoreIndex < 6) return scoreIndex + 1;      // Scores 0-5  -> Cells 1-6
-            if (scoreIndex < 12) return scoreIndex + 2; // Scores 6-11 -> Cells 8-13
-            return -1;
-        };
-
-        gameData.scores.forEach((score, i) => {
-            const cellIndex = getCellIndex(i);
-            if (cellIndex !== -1) {
-                const x = cellIndex * cellWidth + cellWidth / 2;
-                ctx.fillText(score.toString(), x, scoreY);
-            }
-        });
-
-        // --- Draw Totals ---
-        const end1Cell = 7;
-        const end2Cell = 14;
-        const hCell = 15;
-        const gCell = 16;
-        const dozenCell = 17;
-        const rtCell = 18;
-
-        if (gameData.scores.length >= 6) {
-            ctx.fillText(gameData.end1Total.toString(), end1Cell * cellWidth + cellWidth / 2, scoreY);
-        }
-        if (gameData.scores.length >= 12) {
-            ctx.fillText(gameData.end2Total.toString(), end2Cell * cellWidth + cellWidth / 2, scoreY);
-            ctx.fillText(gameData.dozenTotal.toString(), dozenCell * cellWidth + cellWidth / 2, scoreY);
-            ctx.fillText(gameData.runningTotal.toString(), rtCell * cellWidth + cellWidth / 2, scoreY);
-        }
-
-        // Hits and Golds are updated continuously
-        ctx.fillText(gameData.hits.toString(), hCell * cellWidth + cellWidth / 2, scoreY);
-        ctx.fillText(gameData.golds.toString(), gCell * cellWidth + cellWidth / 2, scoreY);
-
-        this.texture.needsUpdate = true;
-    }
-
-    /**
-     * Resets the scoreboard to its initial empty state.
-     */
-    reset() {
-        this.drawEmptyBoard();
-    }
-
-    getMesh() {
-        return this.mesh;
-    }
-}
-
-/**
- * A class for creating and managing a visual in-VR menu.
- */
-class BowHUD {
-    constructor() {
-        this.canvas = document.createElement('canvas');
-        this.canvas.width = 512; // A good resolution for clarity
-        this.canvas.height = 300; // Increased height for the new field
-        this.context = this.canvas.getContext('2d');
-
-        this.texture = new THREE.CanvasTexture(this.canvas);
-        this.texture.encoding = THREE.sRGBEncoding;
-        this.texture.anisotropy = 16;
-
-        const material = new THREE.MeshBasicMaterial({ map: this.texture, transparent: true });
-        // Aspect ratio is 512:300, so the plane should be e.g., 0.4 x 0.234
-        const geometry = new THREE.PlaneGeometry(0.4, 0.234);
-        this.mesh = new THREE.Mesh(geometry, material);
-        this.mesh.visible = false; // Initially hidden
-
-        this.clear(); // Draw the initial empty HUD
-    }
-
-    clear() {
-        const ctx = this.context;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-
-        ctx.clearRect(0, 0, w, h);
-        ctx.fillStyle = 'rgba(0, 20, 40, 0.7)'; // Semi-transparent dark blue
-        ctx.fillRect(0, 0, w, h);
-
-        this.texture.needsUpdate = true;
-    }
-
-    update(data) {
-        this.clear();
-        const ctx = this.context;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 32px sans-serif';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-
-        // --- Scores ---
-        const scoresText = data.scores.join(' | ');
-        ctx.fillText(`Scores: ${scoresText}`, 15, 15);
-
-
-        if (data.lastArrow) {
-            const arrowData = data.lastArrow;
-            ctx.font = '28px sans-serif';
-
-            // --- Speed ---
-            const speed = arrowData.speed.toFixed(2);
-            const topSpeed = arrowData.topSpeed.toFixed(2);
-            ctx.fillText(`Speed: ${speed} m/s (Top: ${topSpeed})`, 15, 65);
-
-            // --- Distance ---
-            ctx.fillStyle = arrowData.isMoving ? 'lime' : 'red';
-            const distance = arrowData.distance.toFixed(2);
-            ctx.fillText(`Distance: ${distance} m`, 15, 110);
-
-            // --- Altitude ---
-            ctx.fillStyle = 'white';
-            const altitude = arrowData.altitude.toFixed(2);
-            const maxAltitude = arrowData.maxAltitude.toFixed(2);
-            ctx.fillText(`Altitude: ${altitude} m (Max: ${maxAltitude})`, 15, 155);
-
-            // --- Angle ---
-            const angle = arrowData.angle.toFixed(1);
-            ctx.fillText(`Angle: ${angle}°`, 15, 200);
-        }
-
-
-        this.texture.needsUpdate = true;
-    }
-
-    getMesh() {
-        return this.mesh;
-    }
-}
 
 class Menu {
     constructor() {
@@ -394,22 +183,10 @@ let currentGame = null;
 let runningTotal = 0;
 let viewingGameIndex = -1; // -1 indicates viewing the current game. 0+ for history.
 
-// --- HUD ---
-let bowHUD;
-let hudScores = [];
-let isHudVisible = true;
-
-/*
-let isArrowCamVisible = false;
-let arrowCamera;
-let arrowCamViewer;
-let arrowCamRenderTarget;
-*/
-
 // --- Menu ---
 let menu;
 let isMenuOpen = false;
-const targetDistances = [3, 6, 9, 15, 20, 25, 30, 40, 50];
+const targetDistances = [6, 9];
 let selectedMenuIndex = 0;
 
 let menuTree; // Will be defined in placeScene
@@ -489,20 +266,10 @@ async function init() {
 
     setupControllers();
 
-    // Create and position the scoreboard
-    scoreboard = new Scoreboard();
-    const scoreboardMesh = scoreboard.getMesh();
-    // Position it in a fixed location in the world.
-    scoreboardMesh.position.set(0, 1.6, -2.5);
-    scene.add(scoreboardMesh);
-
     // Create and add the menu
     menu = new Menu();
     scene.add(menu.getMesh());
 
-    // Create the Bow HUD
-    bowHUD = new BowHUD();
-    scene.add(bowHUD.getMesh());
 /*
     // --- Arrow Camera Setup ---
     // The size of the render target determines the resolution of the arrow cam view.
@@ -523,7 +290,6 @@ async function init() {
 */
 
     loadSettings();
-    startNewGame();
 
 
     renderer.xr.addEventListener('sessionend', cleanupScene);
@@ -559,11 +325,6 @@ function setupControllers() {
 
 function onSelectStart(event) {
     const controller = event.target;
-
-    // --- AudioContext Initialization ---
-    if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
 
     // --- Menu Selection ---
     if (isMenuOpen) {
@@ -743,11 +504,9 @@ async function placeScene(floorY) {
             { name: "Motion", submenu: "motion" }
         ];
         //if (targetMotionState !== 'Still') {
-        options.push({ name: "Speed", submenu: "speed" });
+        //options.push({ name: "Speed", submenu: "speed" });
         //}
-        options.push({ name: "Scoreboard", submenu: "scoreboard" });
         options.push({ name: "Aim Line", submenu: "aim" });
-        options.push({ name: "HUD", submenu: "hud" });
         //options.push({ name: "Arrow Cam", submenu: "arrowCam" });
         options.push({ name: "Help", submenu: "help" });
         return options;
@@ -768,22 +527,6 @@ async function placeScene(floorY) {
         title: "Main Menu",
         getOptions: getMainMenuOptions, // Use a function to generate options
         submenus: {
-            hud: {
-                title: "HUD",
-                parent: "root",
-                options: [
-                    { name: "On", action: () => { isHudVisible = true; saveSettings(); } },
-                    { name: "Off", action: () => { isHudVisible = false; saveSettings(); } }
-                ]
-            },
-            scoreboard: {
-                title: "Scoreboard",
-                parent: "root",
-                options: [
-                    { name: "Show", action: () => { isScoreboardVisible = true; saveSettings(); } },
-                    { name: "Hide", action: () => { isScoreboardVisible = false; saveSettings(); } }
-                ]
-            },
             aim: {
                 title: "Sight",
                 parent: "root",
@@ -827,34 +570,6 @@ async function placeScene(floorY) {
                 options: [
                     { name: "Still", action: () => { targetMotionState = 'Still'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
                     { name: "Left & Right", action: () => { targetMotionState = 'Left & Right'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
-                    { name: "Up & Down", action: () => { targetMotionState = 'Up & Down'; if(target && initialTargetPosition) target.position.copy(initialTargetPosition); } },
-                    { name: "Random Seated", action: () => {
-                        targetMotionState = 'Random Seated';
-                        if(target && initialTargetPosition) {
-                            target.position.copy(initialTargetPosition);
-                            qixMotionStartTime = 0;
-                            lastTimestamp = 0;
-                        }
-                    } },
-                    { name: "Random Standing", action: () => {
-                        targetMotionState = 'Random Standing';
-                        if(target && initialTargetPosition) {
-                            target.position.copy(initialTargetPosition);
-                            qixMotionStartTime = 0;
-                            lastTimestamp = 0;
-                        }
-                    } }
-                ]
-            },
-            speed: {
-                title: "Set Speed",
-                parent: "root",
-                options: [
-                    { name: "Slow", action: () => { targetMotionSpeed = 'Slow'; } },
-                    { name: "Medium", action: () => { targetMotionSpeed = 'Medium'; } },
-                    { name: "Fast", action: () => { targetMotionSpeed = 'Fast'; } },
-                    { name: "Faster", action: () => { targetMotionSpeed = 'Faster'; } },
-                    { name: "Random", action: () => { targetMotionSpeed = 'Random'; } }
                 ]
             }
         }
@@ -1026,8 +741,6 @@ function shootArrow() {
 
     body.setLinvel(worldDirection.multiplyScalar(speed), true);
 
-    playTwangSound();
-
     arrowObject.isMoving = true;
     firedArrows.push(arrowObject);
     lastFiredArrow = arrowObject;
@@ -1108,82 +821,37 @@ function animate(timestamp, frame) {
 
         if (arrow.hasScored) return;
 
-        if (!collisions.has(arrowHandle)) {
-            collisions.set(arrowHandle, { arrow: arrow, scores: [] });
-        }
+        arrow.hasScored = true;
+        arrow.isMoving = false;
 
-        if (otherCollider?.userData?.type === 'target') {
-            const scoreValue = colliderToScoreMap.get(otherCollider.handle);
-            collisions.get(arrowHandle).scores.push(scoreValue);
-        } else if (otherCollider?.userData?.type === 'floor') {
-            collisions.get(arrowHandle).scores.push('M');
+        if (otherCollider?.userData?.type === 'floor') {
+            if (arrow.body) {
+                arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
+            }
+        } else if (otherCollider?.userData?.type === 'target') {
+            if (arrow.body) {
+                target.attach(arrow.mesh);
+                world.removeRigidBody(arrow.body);
+                arrow.body = null;
+            }
         }
     });
-   
-    for (const [arrowHandle, collisionData] of collisions.entries()) {
-        const { arrow, scores } = collisionData;
-
-        if (scores.length > 0) {
-            arrow.hasScored = true;
-
-            // Determine the best score
-            const scoreValue = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
-            scores.sort((a, b) => scoreValue(b) - scoreValue(a));
-            arrow.score = scores[0];
-
-            console.log(`Arrow hit target for score: ${arrow.score}`);
-
-            // Play the "thock" sound, adjusting volume for distance
-            if (arrow.score !== 'M') {
-                playThockSound(arrow.distance);
-            }
-            
-            arrow.isMoving = false;
-            if (arrow.score === 'M') {
-                if (arrow.body) {
-                    arrow.body.setBodyType(RAPIER.RigidBodyType.Fixed);
-                }
-            } else {
-                if (arrow.body) {
-                    target.attach(arrow.mesh);
-                    world.removeRigidBody(arrow.body);
-                    arrow.body = null;
-                }
-            }
-        }
-    }
 
     // --- Game State Machine ---
     //console.log(gameState);
     // Check if the current round is over and ready for scoring
     if (gameState === GameState.SHOOTING) {
         const roundSize = 3;
-        // Determine the start index of the arrows for the current round
-        const currentRoundStartIndex = currentGame.scores.length;
-        const expectedArrowCount = currentRoundStartIndex + roundSize;
-
-        // Only proceed if enough arrows for the current round have been fired
-        if (firedArrows.length >= expectedArrowCount) {
-            // Get the specific arrows for this round
-            const roundArrows = firedArrows.slice(currentRoundStartIndex, expectedArrowCount);
-
-            // Check if all of them have landed by checking their `hasScored` flag
-            const allLanded = roundArrows.every(arrow => arrow.hasScored);
-
+        if (firedArrows.length >= roundSize) {
+            const allLanded = firedArrows.every(arrow => arrow.hasScored);
             if (allLanded) {
-                gameState = GameState.PROCESSING_SCORE;
-                console.log(`Round ${currentGame.scores.length / 3 + 1} complete, all arrows landed. Processing scores.`);
+                gameState = GameState.INSPECTING;
+                console.log("Round complete, all arrows landed. Processing scores.");
             }
         }
     }
 
     switch (gameState) {
-        case GameState.PROCESSING_SCORE:
-            processScores();
-            gameState = GameState.INSPECTING;
-            console.log("Transitioning to INSPECTING state.");
-            break;
-
         case GameState.INSPECTING:
             if (target && !target.userData.inScoringPosition) {
                 scoreboardStateBeforeInspection = isScoreboardVisible;
@@ -1204,10 +872,6 @@ function animate(timestamp, frame) {
             break;
     }
 
-
-    if (scoreboard && scoreboard.getMesh()) {
-        scoreboard.getMesh().visible = isScoreboardVisible;
-    }
 
     if (bowController && myLine) {
         myLine.visible = isAimAssistVisible;
@@ -1498,20 +1162,6 @@ function animate(timestamp, frame) {
         bow.position.copy(controller.position);
         bow.quaternion.copy(finalRotation);
 
-        if (bowHUD) {
-            const hudMesh = bowHUD.getMesh();
-            hudMesh.visible = isHudVisible; // Toggle visibility based on the flag
-
-            if (isHudVisible) {
-                // Position the HUD to the right of the bow
-                const offsetDirection = (bowController.userData.id === 0) ? 1 : -1;
-                const rightDirection = new THREE.Vector3(-offsetDirection, 0, 0).applyQuaternion(controller.quaternion);
-                hudMesh.position.copy(controller.position).add(rightDirection.multiplyScalar(0.3)); // 30cm to the right
-
-                // Make the HUD face the camera/user
-                hudMesh.quaternion.copy(camera.quaternion);
-            }
-        }
         /*
         if (arrowCamViewer) {
             // Position the Arrow Cam viewer above the HUD
@@ -1727,35 +1377,6 @@ if (bowController) {
     renderer.render(scene, camera);
 }
 
-function processScores() {
-    const roundSize = 3;
-    const startIndex = currentGame.scores.length;
-    if (firedArrows.length < startIndex + roundSize) {
-        return;
-    }
-
-    // Identify and store the arrows for the current round
-    currentRoundArrows = firedArrows.slice(startIndex, startIndex + roundSize);
-
-    const scores = currentRoundArrows.map(arrow => arrow.score || 'M');
-
-    // Sort scores for display (X is highest)
-    const scoreValueForSort = (s) => (s === 'X' ? 11 : (s === 'M' ? 0 : parseInt(s, 10)));
-    scores.sort((a, b) => scoreValueForSort(b) - scoreValueForSort(a));
-
-    // Update the persistent HUD scores
-    hudScores = scores;
-
-    // Add new scores to the current game object
-    currentGame.scores.push(...scores);
-
-    // Recalculate all totals for the current game
-    currentGame = calculateGameTotals(currentGame);
-
-    // Update the scoreboard with the new data
-    scoreboard.displayGame(currentGame);
-}
-
 function cleanupRound() {
     // Clean up the arrows from the round that was just inspected
     currentRoundArrows.forEach(obj => {
@@ -1766,9 +1387,6 @@ function cleanupRound() {
         }
     });
     currentRoundArrows = []; // Clear the temporary array
-
-    // Clear the HUD scores for the next round
-    hudScores = [];
 
     // Reset target position
     if (target) {
@@ -1792,87 +1410,7 @@ function cleanupRound() {
 
 // --- Game Logic ---
 
-function startNewGame() {
-    currentGame = {
-        gameNumber: gameHistory.length + 1,
-        scores: [],
-        end1Total: 0,
-        end2Total: 0,
-        dozenTotal: 0,
-        hits: 0,
-        golds: 0,
-        runningTotal: runningTotal // Carry over the running total
-    };
-    firedArrows = [];
-    currentRoundArrows = [];
-    viewingGameIndex = -1; // View the new current game
-    scoreboard.displayGame(currentGame);
-    console.log(`Starting Game #${currentGame.gameNumber}`);
-}
-
-function calculateGameTotals(game) {
-    const parseScore = (s) => (s === 'X' ? 10 : (s === 'M' ? 0 : parseInt(s, 10)));
-    const scoresNumeric = game.scores.map(parseScore);
-
-    game.end1Total = scoresNumeric.slice(0, 6).reduce((a, b) => a + b, 0);
-    game.end2Total = scoresNumeric.slice(6, 12).reduce((a, b) => a + b, 0);
-    game.dozenTotal = game.end1Total + game.end2Total;
-    game.hits = game.scores.filter(s => s !== 'M').length;
-    game.golds = game.scores.filter(s => s === 'X' || s === '10').length;
-
-    // R/T is the sum of previous games' dozen totals plus the current game's dozen total
-    game.runningTotal = runningTotal + game.dozenTotal;
-
-    return game;
-}
-
 // --- Sound Synthesis Functions ---
-
-function playTwangSound() {
-    if (!audioCtx) return;
-
-    const oscillator = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    oscillator.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-
-    oscillator.type = 'sawtooth';
-    oscillator.frequency.setValueAtTime(100, audioCtx.currentTime); // Start at a low frequency
-
-    gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
-
-    oscillator.start();
-    oscillator.stop(audioCtx.currentTime + 0.3);
-}
-
-function playThockSound(distance) {
-    if (!audioCtx) return;
-
-    const oscillator = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    oscillator.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-
-    // A low-frequency sine wave for a "thock"
-    oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(80, audioCtx.currentTime);
-    oscillator.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.1);
-
-
-    // Volume decreases with distance
-    const maxDistance = 50; // The distance at which the sound is barely audible
-    const volume = Math.max(0, 1 - (distance / maxDistance));
-
-    gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.01 * volume, audioCtx.currentTime + 0.15);
-
-
-    oscillator.start();
-    oscillator.stop(audioCtx.currentTime + 0.15);
-}
 
 function saveSettings() {
     const settings = {
