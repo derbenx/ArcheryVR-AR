@@ -34,7 +34,7 @@ class Scoreboard {
         const geometry = new THREE.PlaneGeometry(4.2, 0.5);
         this.mesh = new THREE.Mesh(geometry, material);
 
-        this.headers = ["#", "1", "2", "3", "4", "5", "6", "END", "7", "8", "9", "10", "11", "12", "END", "H", "G", "Dozen", "R/T"];
+        this.headers = ["#", "1", "2", "3", "4", "5", "6", "END", "7", "8", "9", "10", "11", "12", "END", "H", "G", "Dz", "R/T"];
 
         this.drawEmptyBoard(); // Draw the initial empty board
     }
@@ -444,6 +444,8 @@ let scoreboard;
 let eventQueue;
 let colliderToScoreMap;
 
+// --- Audio ---
+let audioCtx = null;
 // --- Controller and State ---
 let rapierDebugRenderer;
 let bowController = null;
@@ -558,6 +560,11 @@ function setupControllers() {
 function onSelectStart(event) {
     const controller = event.target;
 
+    // --- AudioContext Initialization ---
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
     // --- Menu Selection ---
     if (isMenuOpen) {
         if (!currentMenuNode) return;
@@ -574,8 +581,41 @@ function onSelectStart(event) {
         const selectedOption = options[selectedMenuIndex];
         if (selectedOption) {
             if (selectedOption.submenu) {
-                currentMenuNode = menuTree.submenus[selectedOption.submenu];
-                selectedMenuIndex = 0;
+                const submenuName = selectedOption.submenu;
+                currentMenuNode = menuTree.submenus[submenuName];
+
+                // Pre-select the index based on the current setting
+                switch (submenuName) {
+                    case 'range':
+                        // Fallback to initial position if target is not yet created
+                        const currentDistance = target ? -target.userData.shootingPosition.z : targetDistances[0];
+                        const distanceIndex = targetDistances.indexOf(currentDistance);
+                        selectedMenuIndex = (distanceIndex !== -1) ? distanceIndex : 0;
+                        break;
+                    case 'motion':
+                        const motionOptions = currentMenuNode.options.map(o => o.name);
+                        const motionIndex = motionOptions.indexOf(targetMotionState);
+                        selectedMenuIndex = (motionIndex !== -1) ? motionIndex : 0;
+                        break;
+                    case 'speed':
+                        const speedOptions = currentMenuNode.options.map(o => o.name);
+                        const speedIndex = speedOptions.indexOf(targetMotionSpeed);
+                        selectedMenuIndex = (speedIndex !== -1) ? speedIndex : 0;
+                        break;
+                    case 'scoreboard':
+                        selectedMenuIndex = isScoreboardVisible ? 0 : 1;
+                        break;
+                    case 'aim':
+                        selectedMenuIndex = isAimAssistVisible ? 0 : 1;
+                        break;
+                    case 'hud':
+                        selectedMenuIndex = isHudVisible ? 0 : 1;
+                        break;
+                    default:
+                        selectedMenuIndex = 0; // Default for menus without a setting to sync
+                        break;
+                }
+
                 if (currentMenuNode.type === 'info') {
                     menu.drawHelp(currentMenuNode);
                 } else {
@@ -657,7 +697,7 @@ function onSelectStart(event) {
     if (viewingGameIndex !== -1) {
         viewingGameIndex = -1;
         scoreboard.displayGame(currentGame);
-        console.log("Switched back to current game due to drawing arrow.");
+        //console.log("Switched back to current game due to drawing arrow.");
     }
 }
 
@@ -669,7 +709,7 @@ function onSelectEnd(event) {
             shootArrow();
         } else {
             // If not nocked, cancel the arrow
-            console.log("Arrow grab released without nocking. Cancelling arrow.");
+            //console.log("Arrow grab released without nocking. Cancelling arrow.");
             if (arrowObject.mesh) arrowObject.mesh.removeFromParent(); // Remove from controller
             if (arrowObject.body) world.removeRigidBody(arrowObject.body);
             arrowObject = null;
@@ -703,7 +743,7 @@ async function placeScene(floorY) {
             { name: "Motion", submenu: "motion" }
         ];
         //if (targetMotionState !== 'Still') {
-            options.push({ name: "Speed", submenu: "speed" });
+        options.push({ name: "Speed", submenu: "speed" });
         //}
         options.push({ name: "Scoreboard", submenu: "scoreboard" });
         options.push({ name: "Aim Line", submenu: "aim" });
@@ -763,7 +803,7 @@ async function placeScene(floorY) {
                     "A Button: Confirm Menu",
                     "B Button: Cancel/Back Menu",
                     "Joystick: Navigate Menu",
-                    "Thumbstick: Toggle Scoreboard",
+                    "Stick: Toggle Scoreboard",
                     "",
                     "SHOOTING PROCEDURE:",
                     "1. Hands apart.",
@@ -813,6 +853,7 @@ async function placeScene(floorY) {
                     { name: "Slow", action: () => { targetMotionSpeed = 'Slow'; } },
                     { name: "Medium", action: () => { targetMotionSpeed = 'Medium'; } },
                     { name: "Fast", action: () => { targetMotionSpeed = 'Fast'; } },
+                    { name: "Faster", action: () => { targetMotionSpeed = 'Faster'; } },
                     { name: "Random", action: () => { targetMotionSpeed = 'Random'; } }
                 ]
             }
@@ -985,6 +1026,8 @@ function shootArrow() {
 
     body.setLinvel(worldDirection.multiplyScalar(speed), true);
 
+    playTwangSound();
+
     arrowObject.isMoving = true;
     firedArrows.push(arrowObject);
     lastFiredArrow = arrowObject;
@@ -1090,6 +1133,11 @@ function animate(timestamp, frame) {
 
             console.log(`Arrow hit target for score: ${arrow.score}`);
 
+            // Play the "thock" sound, adjusting volume for distance
+            if (arrow.score !== 'M') {
+                playThockSound(arrow.distance);
+            }
+            
             arrow.isMoving = false;
             if (arrow.score === 'M') {
                 if (arrow.body) {
@@ -1319,15 +1367,15 @@ function animate(timestamp, frame) {
     // --- Target Motion Logic ---
     if (gameState === GameState.SHOOTING && targetMotionState !== 'Still' && target && initialTargetPosition && target.userData.body) {
         const time = performance.now() / 1000; // Time in seconds
-        const speedMap = { Slow: 0.5, Medium: 1.0, Fast: 2.0 };
+        const speedMap = { Slow: 0.5, Medium: 1.0, Fast: 2.0, Faster: 3.0 };
         let speed;
 
-        if (targetMotionSpeed === 'Random Standing' || targetMotionSpeed === 'Random Seated') {
-            const slow = speedMap.Slow;
-            const fast = speedMap.Fast;
-            const speedRange = (fast - slow) / 2;
+        if (targetMotionSpeed === 'Random') {
+            const slow = speedMap.Medium;
+            const fast = speedMap.Faster;
+            const speedRange = (fast - slow);// / 2;
             const midSpeed = slow + speedRange;
-            speed = midSpeed + Math.sin(time * 0.1) * speedRange;
+            speed = midSpeed + Math.sin(time * 0.3) * speedRange;
         } else {
             speed = speedMap[targetMotionSpeed] || 1.0;
         }
@@ -1776,6 +1824,54 @@ function calculateGameTotals(game) {
     game.runningTotal = runningTotal + game.dozenTotal;
 
     return game;
+}
+
+// --- Sound Synthesis Functions ---
+
+function playTwangSound() {
+    if (!audioCtx) return;
+
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    oscillator.type = 'sawtooth';
+    oscillator.frequency.setValueAtTime(100, audioCtx.currentTime); // Start at a low frequency
+
+    gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + 0.3);
+}
+
+function playThockSound(distance) {
+    if (!audioCtx) return;
+
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    // A low-frequency sine wave for a "thock"
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(80, audioCtx.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.1);
+
+
+    // Volume decreases with distance
+    const maxDistance = 50; // The distance at which the sound is barely audible
+    const volume = Math.max(0, 1 - (distance / maxDistance));
+
+    gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01 * volume, audioCtx.currentTime + 0.15);
+
+
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + 0.15);
 }
 
 function saveSettings() {
