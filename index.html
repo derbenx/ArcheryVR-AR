@@ -1,31 +1,65 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<link rel="manifest" href="manifest.json" />
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AR Archery</title>
+    <title>Loading AR Archery...</title>
+    <link rel="manifest" href="manifest.json" />
     <style>
-        body { margin: 0; }
-        canvas { display: block; }
+        body {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            flex-direction: column;
+        }
+        #loader-container {
+            width: 80%;
+            max-width: 600px;
+            text-align: center;
+        }
+        #progress-bar-container {
+            width: 100%;
+            background-color: #333;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        #progress-bar {
+            width: 0%;
+            height: 30px;
+            background-color: #4CAF50;
+            transition: width 0.1s linear;
+        }
+        #status {
+            font-size: 1.2em;
+        }
+        #retry-button {
+            display: none; /* Hidden by default */
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 1em;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
     </style>
-        <script>
- if (typeof navigator.serviceWorker !== 'undefined') {
-  navigator.serviceWorker.register('sw.js')
- }
-    </script>
 </head>
 <body>
-
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "./js/three/build/three.module.js",
-                "three/addons/": "./js/three/examples/jsm/",
-                "@dimforge/rapier3d-compat": "./js/rapier/rapier.mjs"
-            }
-        }
-    </script>
-    <script type="module" src="./main.js"></script>
+    <div id="loader-container">
+        <h1>Loading Game Assets...</h1>
+        <div id="progress-bar-container">
+            <div id="progress-bar"></div>
+        </div>
+        <p id="status">Initializing...</p>
+        <button id="retry-button">Retry Download</button>
+    </div>
+    <script src="preloader.js"></script>
 </body>
 </html>
