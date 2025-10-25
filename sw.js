@@ -1,4 +1,4 @@
-const DEV_HOST = 'dbfm.derben.ca';
+const DEV_HOST_REGEX = /localhost|127\.0\.0\.1|dbfm\.derben\.ca/;
 const PROD_HOST = 'derben.ca';
 const CACHE_PREFIX = 'archery-cache-';
 
@@ -26,7 +26,7 @@ const sendMessage = async (message) => {
 };
 
 self.addEventListener('install', (event) => {
-    if (self.location.hostname === DEV_HOST) {
+    if (DEV_HOST_REGEX.test(self.location.hostname)) {
         console.log('Bypassing service worker install for development.');
         return self.skipWaiting();
     }
@@ -35,15 +35,16 @@ self.addEventListener('install', (event) => {
             try {
                 const response = await fetch('./version.json');
                 const { version } = await response.json();
-                const cacheName = `${CACHE_PREFIX}v${version}`;
-                const cache = await caches.open(cacheName);
+                currentCacheName = `${CACHE_PREFIX}v${version}`;
+                const cache = await caches.open(currentCacheName);
                 const total = ASSETS.length;
 
                 for (let i = 0; i < total; i++) {
                     const asset = ASSETS[i];
                     try {
-                        const cachedResponse = await cache.match(asset);
-                        if (!cachedResponse) await cache.add(asset);
+                        // Always fetch from network and cache, to ensure we have the latest version of assets for this version
+                        const req = new Request(asset, { cache: 'reload' });
+                        await cache.add(req);
                         await sendMessage({ type: 'progress', loaded: i + 1, total, file: asset });
                     } catch (err) {
                         console.error(`Failed to cache ${asset}:`, err);
@@ -52,6 +53,12 @@ self.addEventListener('install', (event) => {
                     }
                 }
                 await sendMessage({ type: 'complete' });
+
+                // Clean up old caches
+                const cacheNames = await caches.keys();
+                const oldCacheNames = cacheNames.filter(name => name.startsWith(CACHE_PREFIX) && name !== currentCacheName);
+                await Promise.all(oldCacheNames.map(name => caches.delete(name)));
+
                 self.skipWaiting();
             } catch (err) {
                 console.error('Service worker installation failed.', err);
@@ -61,32 +68,13 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-    if (self.location.hostname === DEV_HOST) {
-        console.log('Bypassing service worker activation for development.');
-        return self.clients.claim();
-    }
-    event.waitUntil(
-        (async () => {
-            try {
-                await self.clients.claim();
-                const response = await fetch('./version.json');
-                const { version } = await response.json();
-                currentCacheName = `${CACHE_PREFIX}v${version}`;
-
-                const cacheNames = await caches.keys();
-                const oldCacheNames = cacheNames.filter(name => name.startsWith(CACHE_PREFIX) && name !== currentCacheName);
-                await Promise.all(oldCacheNames.map(name => caches.delete(name)));
-            } catch (err) {
-                console.error('Service worker activation failed.', err);
-            }
-        })()
-    );
+    event.waitUntil(self.clients.claim());
 });
 
 self.addEventListener('fetch', (event) => {
     const requestUrl = new URL(event.request.url);
 
-    if (requestUrl.hostname === DEV_HOST) {
+    if (DEV_HOST_REGEX.test(requestUrl.hostname)) {
         return event.respondWith(fetch(event.request));
     }
 

@@ -369,6 +369,8 @@ let floorBody = null;
 
 // --- Physics ---
 let world;
+let loadedGLTF = null;
+let previewModel = null;
 const gravity = { x: 0.0, y: grv, z: 0.0 };
 
 // --- Collision Groups ---
@@ -457,6 +459,21 @@ let thumbstickPressed = [false, false]; // To track thumbstick button state
 let joystickMoved = [false, false]; // To prevent rapid-fire history navigation
 let button12Pressed = [false, false]; // To track button 12 state for each controller
 
+function showPreviewModel() {
+    if (loadedGLTF) {
+        previewModel = loadedGLTF.scene.clone();
+        previewModel.position.set(0, 1.4, -1);
+        scene.add(previewModel);
+    }
+}
+
+function cleanupPreviewModel() {
+    if (previewModel) {
+        scene.remove(previewModel);
+        previewModel = null;
+    }
+}
+
 async function init() {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -465,7 +482,9 @@ async function init() {
 
     scene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 1.6, 0);
+    camera.position.set(0, 1.6, 2);
+    camera.lookAt(0, 1.6, 0);
+
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambientLight);
@@ -474,6 +493,11 @@ async function init() {
     scene.add(directionalLight);
 
     loader = new GLTFLoader();
+    loader.load('3d/archery.glb', (gltf) => {
+        loadedGLTF = gltf;
+        showPreviewModel();
+    });
+
 
     await RAPIER.init();
     world = new RAPIER.World(gravity);
@@ -719,6 +743,12 @@ function onSelectEnd(event) {
 }
 
 async function placeScene(floorY) {
+    if (!loadedGLTF) {
+        console.error("GLTF model not loaded yet!");
+        return;
+    }
+    cleanupPreviewModel();
+
 
     const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
     const points = [new THREE.Vector3(), new THREE.Vector3()];
@@ -727,7 +757,7 @@ async function placeScene(floorY) {
     myLine.visible = false;
     scene.add(myLine);
 
-    const gltf = await loader.loadAsync('3d/archery.glb');
+    const gltf = loadedGLTF;
 
     if (floorBody) world.removeRigidBody(floorBody);
     const floorBodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(0, floorY, 0);
@@ -1070,6 +1100,7 @@ function cleanupScene() {
     startNewGame();
 
     sceneSetupInitiated = false;
+    showPreviewModel();
 }
 
 function animate(timestamp, frame) {
