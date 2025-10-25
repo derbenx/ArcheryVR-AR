@@ -28,7 +28,10 @@ const sendMessage = async (message) => {
 self.addEventListener('install', (event) => {
     if (DEV_HOST_REGEX.test(self.location.hostname)) {
         console.log('Bypassing service worker install for development.');
-        return self.skipWaiting();
+        event.waitUntil(
+            sendMessage({ type: 'complete' }).then(() => self.skipWaiting())
+        );
+        return;
     }
     event.waitUntil(
         (async () => {
