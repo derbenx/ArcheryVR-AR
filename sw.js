@@ -20,15 +20,16 @@ const ASSETS = [
     '/3d/archery.glb'
 ];
 
-// Helper function to send progress messages
 const sendMessage = async (message) => {
     const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
-    clients.forEach(client => {
-        client.postMessage(message);
-    });
+    clients.forEach(client => client.postMessage(message));
 };
 
 self.addEventListener('install', (event) => {
+    if (self.location.hostname === DEV_HOST) {
+        console.log('Bypassing service worker install for development.');
+        return self.skipWaiting();
+    }
     event.waitUntil(
         (async () => {
             try {
@@ -42,10 +43,8 @@ self.addEventListener('install', (event) => {
                     const asset = ASSETS[i];
                     try {
                         const cachedResponse = await cache.match(asset);
-                        if (!cachedResponse) {
-                            await cache.add(asset);
-                        }
-                        await sendMessage({ type: 'progress', loaded: i + 1, total: total, file: asset });
+                        if (!cachedResponse) await cache.add(asset);
+                        await sendMessage({ type: 'progress', loaded: i + 1, total, file: asset });
                     } catch (err) {
                         console.error(`Failed to cache ${asset}:`, err);
                         await sendMessage({ type: 'error', message: `Failed to download: ${asset}` });
@@ -61,18 +60,23 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
+    if (self.location.hostname === DEV_HOST) {
+        console.log('Bypassing service worker activation for development.');
+        return self.clients.claim();
+    }
     event.waitUntil(
         (async () => {
-            const response = await fetch('/version.json');
-            const { version } = await response.json();
-            currentCacheName = `${CACHE_PREFIX}v${version}`;
+            try {
+                const response = await fetch('/version.json');
+                const { version } = await response.json();
+                currentCacheName = `${CACHE_PREFIX}v${version}`;
 
-            const cacheNames = await caches.keys();
-            const oldCacheNames = cacheNames.filter(name => {
-                return name.startsWith(CACHE_PREFIX) && name !== currentCacheName;
-            });
-
-            await Promise.all(oldCacheNames.map(name => caches.delete(name)));
+                const cacheNames = await caches.keys();
+                const oldCacheNames = cacheNames.filter(name => name.startsWith(CACHE_PREFIX) && name !== currentCacheName);
+                await Promise.all(oldCacheNames.map(name => caches.delete(name)));
+            } catch (err) {
+                console.error('Service worker activation failed.', err);
+            }
         })()
     );
 });
@@ -81,25 +85,20 @@ self.addEventListener('fetch', (event) => {
     const requestUrl = new URL(event.request.url);
 
     if (requestUrl.hostname === DEV_HOST) {
-        event.respondWith(fetch(event.request));
-        return;
+        return event.respondWith(fetch(event.request));
     }
 
     event.respondWith(
         (async () => {
             const cachedResponse = await caches.match(event.request);
-            if (cachedResponse) {
-                return cachedResponse;
-            }
+            if (cachedResponse) return cachedResponse;
 
             try {
                 const networkResponse = await fetch(event.request);
-
                 if (currentCacheName && event.request.method === 'GET') {
                     const cache = await caches.open(currentCacheName);
                     cache.put(event.request, networkResponse.clone());
                 }
-
                 return networkResponse;
             } catch (error) {
                 console.error('Fetch failed:', error);
