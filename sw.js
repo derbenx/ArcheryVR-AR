@@ -1,5 +1,6 @@
 const DEV_HOST = 'dbfm.derben.ca';
 const PROD_HOST = 'derben.ca';
+const CACHE_PREFIX = 'archery-cache-';
 
 let currentCacheName;
 
@@ -33,25 +34,22 @@ self.addEventListener('install', (event) => {
             try {
                 const response = await fetch('/version.json');
                 const { version } = await response.json();
-                const cacheName = `archery-cache-v${version}`;
+                const cacheName = `${CACHE_PREFIX}v${version}`;
                 const cache = await caches.open(cacheName);
                 const total = ASSETS.length;
 
                 for (let i = 0; i < total; i++) {
                     const asset = ASSETS[i];
                     try {
-                        // Check if the asset is already in the cache
                         const cachedResponse = await cache.match(asset);
                         if (!cachedResponse) {
-                            // If not cached, fetch and add it
                             await cache.add(asset);
                         }
-                        // Send progress update regardless, so the bar fills on retry
                         await sendMessage({ type: 'progress', loaded: i + 1, total: total, file: asset });
                     } catch (err) {
                         console.error(`Failed to cache ${asset}:`, err);
                         await sendMessage({ type: 'error', message: `Failed to download: ${asset}` });
-                        throw err; // Abort installation
+                        throw err;
                     }
                 }
                 await sendMessage({ type: 'complete' });
@@ -67,10 +65,12 @@ self.addEventListener('activate', (event) => {
         (async () => {
             const response = await fetch('/version.json');
             const { version } = await response.json();
-            currentCacheName = `archery-cache-v${version}`;
+            currentCacheName = `${CACHE_PREFIX}v${version}`;
 
             const cacheNames = await caches.keys();
-            const oldCacheNames = cacheNames.filter(name => name !== currentCacheName);
+            const oldCacheNames = cacheNames.filter(name => {
+                return name.startsWith(CACHE_PREFIX) && name !== currentCacheName;
+            });
 
             await Promise.all(oldCacheNames.map(name => caches.delete(name)));
         })()
@@ -80,13 +80,11 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
     const requestUrl = new URL(event.request.url);
 
-    // Development mode: always fetch from network
     if (requestUrl.hostname === DEV_HOST) {
         event.respondWith(fetch(event.request));
         return;
     }
 
-    // Production mode: cache-first
     event.respondWith(
         (async () => {
             const cachedResponse = await caches.match(event.request);
@@ -94,7 +92,6 @@ self.addEventListener('fetch', (event) => {
                 return cachedResponse;
             }
 
-            // Fallback to network
             try {
                 const networkResponse = await fetch(event.request);
 
