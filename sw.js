@@ -52,6 +52,7 @@ self.addEventListener('install', (event) => {
                     }
                 }
                 await sendMessage({ type: 'complete' });
+                self.skipWaiting(); // Force the new SW to activate immediately
             } catch (err) {
                 console.error('Service worker installation failed.', err);
             }
@@ -67,6 +68,9 @@ self.addEventListener('activate', (event) => {
     event.waitUntil(
         (async () => {
             try {
+                // Claim control of the page immediately
+                await self.clients.claim();
+
                 const response = await fetch('/version.json');
                 const { version } = await response.json();
                 currentCacheName = `${CACHE_PREFIX}v${version}`;
